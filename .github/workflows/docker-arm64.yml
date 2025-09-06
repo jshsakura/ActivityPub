@@ -3,8 +3,6 @@ name: Build and Push ARM64 Docker Image
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
 
 jobs:
   docker:
@@ -23,12 +21,12 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         
-    - name: Build and push
+    - name: Build and push ARM64
       uses: docker/build-push-action@v5
       with:
         context: .
         platforms: linux/arm64
         push: true
-        tags: ${{ secrets.DOCKERHUB_USERNAME }}/activitypub:latest
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/activitypub:arm64
         cache-from: type=gha
         cache-to: type=gha,mode=max
