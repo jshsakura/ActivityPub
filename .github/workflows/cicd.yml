@@ -1,12 +1,68 @@
-name: CICD (DISABLED)
+name: CICD
 
-# Disabled - using docker-build.yml for ARM64 builds instead
 on:
-  workflow_dispatch: # Manual trigger only
+  workflow_dispatch:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*" # Trigger on semantic version tags like v1.0.0
+
+concurrency:
+  group: cicd-${{ github.ref_name == 'main' && 'main' || github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != 'main' }}
 
 jobs:
-  disabled:
+  build:
+    uses: ./.github/workflows/build.yml
+    secrets: inherit
+
+  test:
+    needs: build
+    uses: ./.github/workflows/test.yml
+    with:
+      skip-tests: ${{ contains(github.event.pull_request.labels.*.name, 'skip-tests') }}
+
+  push:
+    needs: [build, test]
+    uses: ./.github/workflows/push.yml
+    with:
+      activitypub-private-tags: ${{ needs.build.outputs.activitypub-private-tags }}
+      activitypub-public-tags: ${{ needs.build.outputs.activitypub-public-tags }}
+      activitypub-public-labels: ${{ needs.build.outputs.activitypub-public-labels }}
+      activitypub-migrations-private-tags: ${{ needs.build.outputs.activitypub-migrations-private-tags }}
+      activitypub-migrations-public-tags: ${{ needs.build.outputs.activitypub-migrations-public-tags }}
+      activitypub-migrations-public-labels: ${{ needs.build.outputs.activitypub-migrations-public-labels }}
+
+  deploy-pr:
+    needs: push
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/deploy-pr.yml
+    secrets: inherit
+
+  deploy:
+    needs: push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+    with:
+      github-sha: ${{ github.sha }}
+
+  slack-notify:
+    name: Slack Notification on Failure
+    needs: [build, test, push, deploy]
     runs-on: ubuntu-latest
     steps:
-    - name: Workflow disabled
-      run: echo "This workflow has been disabled. Using docker-build.yml for ARM64 builds."
+      - uses: tryghost/actions/actions/slack-build@main
+        if: always() && failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          status: ${{ job.status }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

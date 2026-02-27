@@ -1,4 +1,4 @@
-FROM ubuntu:24.04@sha256:7c06e91f61fa88c08cc74f7e1b7c69ae24910d745357e0dfe1d2c0322aaf20f9
+FROM ubuntu:24.04@sha256:68434214381cb38287104e629fe8ee720167dd98cbb36ab1cbbab342515fa6ab
 
 RUN apt update && \
     apt install -y curl percona-toolkit

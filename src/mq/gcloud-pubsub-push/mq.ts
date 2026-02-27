@@ -174,6 +174,8 @@ export class GCloudPubSubPushMessageQueue implements MessageQueue {
                                 mq_message: message,
                             },
                         );
+
+                        this.errorListener?.(error as Error);
                     }
                 }
             }
@@ -204,6 +206,8 @@ export class GCloudPubSubPushMessageQueue implements MessageQueue {
                     `Failed to check backoff for message [FedifyID: ${message.id}]: ${error}`,
                     { fedifyId: message.id, error, mq_message: message },
                 );
+
+                this.errorListener?.(error as Error);
 
                 // Continue with enqueuing if we can't check the backoff
             }
@@ -434,6 +438,10 @@ export class GCloudPubSubPushMessageQueue implements MessageQueue {
             return;
         }
 
+        this.logger.info(
+            'Recording delivery failure [FedifyID: {fedifyId}]: {error}',
+            { fedifyId: message.id, error, mq_message: message },
+        );
         try {
             const inboxUrl = new URL(message.inbox);
 
@@ -443,9 +451,11 @@ export class GCloudPubSubPushMessageQueue implements MessageQueue {
             );
         } catch (error) {
             this.logger.error(
-                `Failed to record delivery failure [FedifyID: ${message.id}]: ${error}`,
+                'Failed to record delivery failure [FedifyID: {fedifyId}]: {error}',
                 { fedifyId: message.id, error, mq_message: message },
             );
+
+            this.errorListener?.(error as Error);
         }
     }
 
@@ -467,6 +477,8 @@ export class GCloudPubSubPushMessageQueue implements MessageQueue {
                 `Failed to clear delivery failure [FedifyID: ${message.id}]: ${error}`,
                 { fedifyId: message.id, error, mq_message: message },
             );
+
+            this.errorListener?.(error as Error);
         }
     }
 }

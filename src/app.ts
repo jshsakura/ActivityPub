@@ -77,6 +77,8 @@ import type { GhostPostService } from '@/ghost/ghost-post.service';
 import { getTraceContext } from '@/helpers/context-header';
 import { AccountController } from '@/http/api/account.controller';
 import { BlockController } from '@/http/api/block.controller';
+import { BlueskyController } from '@/http/api/bluesky.controller';
+import { ClientConfigController } from '@/http/api/client-config.controller';
 import { FeedController } from '@/http/api/feed.controller';
 import { FollowController } from '@/http/api/follow.controller';
 import { BadRequest } from '@/http/api/helpers/response';
@@ -96,6 +98,7 @@ import {
 } from '@/http/middleware/role-guard';
 import { RouteRegistry } from '@/http/routing/route-registry';
 import { setupInstrumentation, spanWrapper } from '@/instrumentation';
+import type { BlueskyService } from '@/integration/bluesky.service';
 import {
     createPushMessageHandler,
     type GCloudPubSubPushMessageQueue,
@@ -196,29 +199,25 @@ export type FedifyContext = Context<ContextData>;
 
 const globalFedify = container.resolve<Federation<ContextData>>('fedify');
 const globalFedifyKv = container.resolve<KvStore>('fedifyKv');
+const globalKv = container.resolve<KvStore>('kv');
 
 if (process.env.MANUALLY_START_QUEUE === 'true') {
     globalFedify.startQueue({
-        globaldb: globalFedifyKv,
+        globaldb: globalKv,
         logger: globalLogging,
     });
 }
 
 // Initialize services that need it
+container.resolve<BlueskyService>('blueskyService').init();
 container.resolve<FediverseBridge>('fediverseBridge').init();
-
 container.resolve<FeedUpdateService>('feedUpdateService').init();
-
 container.resolve<NotificationEventService>('notificationEventService').init();
-
 container.resolve<GhostExploreService>('ghostExploreService').init();
-
 container.resolve<GhostPostService>('ghostPostService').init();
-
 container
     .resolve<PostInteractionCountsService>('postInteractionCountsService')
     .init();
-
 container
     .resolve<EventSerializer>('eventSerializer')
     .register(
@@ -242,7 +241,7 @@ function ensureCorrectContext<B, R>(
             (ctx as any).data = {};
         }
         if (!ctx.data.globaldb) {
-            ctx.data.globaldb = globalFedifyKv;
+            ctx.data.globaldb = globalKv;
         }
         if (!ctx.data.logger) {
             ctx.data.logger = globalLogging;
@@ -554,7 +553,7 @@ app.use(async (ctx, next) => {
 });
 
 app.use(async (ctx, next) => {
-    ctx.set('globaldb', globalFedifyKv);
+    ctx.set('globaldb', globalKv);
 
     return next();
 });
@@ -619,9 +618,14 @@ app.use(async (ctx, next) => {
     return next();
 });
 
+// Track in-flight requests
+let activeRequests = 0;
+
 app.use(async (ctx, next) => {
     const id = crypto.randomUUID();
     const start = Date.now();
+
+    activeRequests++;
 
     ctx.get('logger').info('{method} {host} {url} {id}', {
         id,
@@ -630,17 +634,24 @@ app.use(async (ctx, next) => {
         url: ctx.req.url,
     });
 
-    await next();
-    const end = Date.now();
+    try {
+        await next();
+    } finally {
+        activeRequests--;
+        const end = Date.now();
 
-    ctx.get('logger').info('{method} {host} {url} {id} {status} {duration}ms', {
-        id,
-        method: ctx.req.method.toUpperCase(),
-        host: ctx.req.header('host'),
-        url: ctx.req.url,
-        status: ctx.res.status,
-        duration: end - start,
-    });
+        ctx.get('logger').info(
+            '{method} {host} {url} {id} {status} {duration}ms',
+            {
+                id,
+                method: ctx.req.method.toUpperCase(),
+                host: ctx.req.header('host'),
+                url: ctx.req.url,
+                status: ctx.res.status,
+                duration: end - start,
+            },
+        );
+    }
 });
 
 app.use(async (ctx, next) => {
@@ -867,6 +878,11 @@ routeRegistry.registerController(
 );
 routeRegistry.registerController('mediaController', MediaController);
 routeRegistry.registerController('blockController', BlockController);
+routeRegistry.registerController(
+    'clientConfigController',
+    ClientConfigController,
+);
+routeRegistry.registerController('blueskyController', BlueskyController);
 
 // Mount all registered routes
 routeRegistry.mountRoutes(app, container);
@@ -938,9 +954,30 @@ let isShuttingDown = false;
 async function gracefulShutdown(signal: 'SIGINT' | 'SIGTERM') {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    globalLogging.info(`Received ${signal}, shutting down gracefully`);
+    globalLogging.info(
+        `Received ${signal}, shutting down gracefully. Active requests: ${activeRequests}`,
+    );
+    const requestMonitor = setInterval(() => {
+        if (activeRequests > 0) {
+            globalLogging.info(
+                `Waiting for ${activeRequests} in-flight requests to complete...`,
+            );
+        }
+    }, 1000);
     try {
-        await new Promise((resolve) => setTimeout(resolve, 9000));
+        const maxWaitTime = 9000;
+        const startTime = Date.now();
+        while (activeRequests > 0 && Date.now() - startTime < maxWaitTime) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (activeRequests > 0) {
+            globalLogging.warn(
+                `Shutting down with ${activeRequests} requests still in flight`,
+            );
+        } else {
+            globalLogging.info('All requests completed');
+        }
+        clearInterval(requestMonitor);
         await knex.destroy();
         globalLogging.info('DB connection closed');
         await Sentry.close(1000);
@@ -953,6 +990,7 @@ async function gracefulShutdown(signal: 'SIGINT' | 'SIGTERM') {
             },
         );
     } finally {
+        clearInterval(requestMonitor);
         process.exit(0);
     }
 }
