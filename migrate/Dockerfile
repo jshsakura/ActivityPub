@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim@sha256:210137e2083cc9cd391a5117ff97e158fb8e69b984063e585732aac86216d60e
+FROM debian:bookworm-slim
 
 RUN apt-get update -y && \
     apt-get install -y curl && \
