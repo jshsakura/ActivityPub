@@ -1,4 +1,4 @@
-name: Build and Push ARM64 Docker Image
+name: Build and Push ARM64 Docker Images
 
 on:
   push:
@@ -21,7 +21,7 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         
-    - name: Build and push ARM64
+    - name: Build and push ActivityPub
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -30,3 +30,11 @@ jobs:
         tags: ${{ secrets.DOCKERHUB_USERNAME }}/activitypub:arm64
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Build and push Migrate
+      uses: docker/build-push-action@v5
+      with:
+        context: ./migrate
+        platforms: linux/arm64
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/activitypub-migrate:arm64
