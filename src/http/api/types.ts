@@ -50,7 +50,7 @@ export interface AccountDTO extends Omit<MinimalAccountDTO, 'isFollowing'> {
     /**
      * Bio of the account
      */
-    bio: string | null;
+    bio: string;
     /**
      * Public URL of the account
      */
@@ -94,14 +94,23 @@ export interface AccountDTOWithBluesky extends AccountDTO {
      */
     blueskyEnabled: boolean;
     /**
-     * Handle of the Bluesky account (if enabled)
+     * Handle of the Bluesky account (if enabled and confirmed)
      */
     blueskyHandle: string | null;
+    /**
+     * Whether the Bluesky handle has been confirmed via Bluesky API
+     */
+    blueskyHandleConfirmed: boolean;
 }
 
 export type AuthorDTO = Pick<
     AccountDTO,
     'id' | 'handle' | 'avatarUrl' | 'name' | 'url' | 'followedByMe'
+>;
+
+export type ExploreAccountDTO = Pick<
+    AccountDTO,
+    'id' | 'handle' | 'avatarUrl' | 'name' | 'url' | 'bio' | 'followedByMe'
 >;
 
 /**
@@ -266,4 +275,18 @@ export interface BlockedDomainDTO {
      * The fully qualified URL of the blocked domain
      */
     url: string;
+}
+
+/**
+ * DTO for a topic
+ */
+export interface TopicDTO {
+    /**
+     * Slug of the topic (used as identifier in URLs)
+     */
+    slug: string;
+    /**
+     * Display name of the topic
+     */
+    name: string;
 }

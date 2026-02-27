@@ -505,6 +505,10 @@ export class AccountService {
      * @param account Account
      * @param options Options for the query
      */
+    /**
+     * Get follower accounts for the provided account.
+     * TODO: Move direct DB query to repository - @see ADR-0006
+     */
     async getFollowerAccounts(
         account: { id: Account['id'] },
         options: GetFollowerAccountsOptions, // @TODO: Make this optional
@@ -862,5 +866,29 @@ export class AccountService {
             backoffUntil: backoff.backoff_until,
             backoffSeconds: backoff.backoff_seconds,
         };
+    }
+
+    async getKeyPair(
+        accountId: number,
+    ): Promise<
+        Result<
+            { publicKey: string; privateKey: string },
+            'account-not-found' | 'key-pair-not-found'
+        >
+    > {
+        const account = await this.accountRepository.getKeyPair(accountId);
+
+        if (!account) {
+            return error('account-not-found');
+        }
+
+        if (!account.publicKey || !account.privateKey) {
+            return error('key-pair-not-found');
+        }
+
+        return ok({
+            publicKey: account.publicKey,
+            privateKey: account.privateKey,
+        });
     }
 }

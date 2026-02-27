@@ -20,8 +20,6 @@ This ActivityPub service uses a variety of environment variables to configure it
 - `SKIP_SIGNATURE_VERIFICATION` - Set to `true` to skip ActivityPub signature verification
   - This is only used in `development` and `testing` environments
   - See [https://github.com/fedify-dev/fedify/issues/110](https://github.com/fedify-dev/fedify/issues/110) for more details
-- `ACTIVITYPUB_COLLECTION_PAGE_SIZE`* - Set the number of items to return per page for an ActivityPub collection
-  - This used by the `outbox` and `following` collections
 - `FEDIFY_KV_STORE_TYPE` - Set to `redis` to use Redis as the [key-value store for Fedify](https://fedify.dev/manual/kv)
   - If not set, MySQL will be used
 - `USE_MQ` - Set to `true` to enable message queue usage
@@ -122,4 +120,7 @@ If using local storage:
 - `SENTRY_DSN` - Sentry Data Source Name for error tracking
 - `OTEL_DEBUG_LOGGING` - Set to `true` to enable OpenTelemetry debug logging
   - This is only used in `production` environments
-- `ENABLE_CPU_PROFILER` - Set to `true` to enable Google Cloud CPU profiling
+- `ENABLE_GCP_CPU_PROFILER` - Set to `true` to enable Google Cloud CPU profiling
+- `ENABLE_NODE_CPU_PROFILE_FOR` - Set to `5m` (for example) to collect a CPU profile for the specified duration
+- `NODE_CPU_PROFILE_BUCKET_NAME` - Google Cloud Storage bucket name to upload CPU profiles to
+  - Required if `ENABLE_NODE_CPU_PROFILE_FOR` is set

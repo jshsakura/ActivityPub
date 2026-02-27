@@ -1,14 +1,8 @@
-import {
-    Accept,
-    type Actor,
-    type Context,
-    type Follow,
-    Reject,
-} from '@fedify/fedify';
+import { Accept, type Actor, type Follow, Reject } from '@fedify/fedify';
 import { v4 as uuidv4 } from 'uuid';
 
 import type { AccountService } from '@/account/account.service';
-import type { ContextData } from '@/app';
+import type { FedifyContext } from '@/app';
 import { getValue, isError } from '@/core/result';
 import type { ModerationService } from '@/moderation/moderation.service';
 
@@ -18,29 +12,29 @@ export class FollowHandler {
         private readonly moderationService: ModerationService,
     ) {}
 
-    async handle(ctx: Context<ContextData>, follow: Follow) {
-        ctx.data.logger.info('Handling Follow');
+    async handle(ctx: FedifyContext, follow: Follow) {
+        ctx.data.logger.debug('Handling Follow');
 
         // Validate activity data
         if (!follow.id) {
-            ctx.data.logger.info('Follow missing id, exit early');
+            ctx.data.logger.debug('Follow missing id, exit early');
             return;
         }
 
         if (!follow.objectId) {
-            ctx.data.logger.info('Follow missing objectId, exit early');
+            ctx.data.logger.debug('Follow missing objectId, exit early');
             return;
         }
 
         const parsed = ctx.parseUri(follow.objectId);
         if (parsed?.type !== 'actor') {
-            ctx.data.logger.info('Follow object is not an actor, exit early');
+            ctx.data.logger.debug('Follow object is not an actor, exit early');
             return;
         }
 
         const sender = await follow.getActor(ctx);
         if (sender === null || sender.id === null) {
-            ctx.data.logger.info('Follow sender missing, exit early');
+            ctx.data.logger.debug('Follow sender missing, exit early');
             return;
         }
 
@@ -53,7 +47,7 @@ export class FollowHandler {
             follow.objectId,
         );
         if (isError(accountToFollowResult)) {
-            ctx.data.logger.info('Account to follow not found, exit early');
+            ctx.data.logger.debug('Account to follow not found, exit early');
             return;
         }
         const accountToFollow = getValue(accountToFollowResult);
@@ -62,7 +56,7 @@ export class FollowHandler {
             sender.id,
         );
         if (isError(followerAccountResult)) {
-            ctx.data.logger.info('Follower account not found, exit early');
+            ctx.data.logger.debug('Follower account not found, exit early');
             return;
         }
         const followerAccount = getValue(followerAccountResult);
@@ -74,7 +68,7 @@ export class FollowHandler {
             );
 
         if (!isFollowAllowed) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 `${followerAccount.apId} is not allowed to follow ${accountToFollow.apId}, sending reject`,
             );
 
@@ -93,7 +87,7 @@ export class FollowHandler {
     }
 
     private async persistActivity(
-        ctx: Context<ContextData>,
+        ctx: FedifyContext,
         follow: Follow,
         sender: Actor,
     ) {
@@ -109,7 +103,7 @@ export class FollowHandler {
     }
 
     private async sendAccept(
-        ctx: Context<ContextData>,
+        ctx: FedifyContext,
         follow: Follow,
         identifier: string,
         sender: Actor,
@@ -128,7 +122,7 @@ export class FollowHandler {
     }
 
     private async sendReject(
-        ctx: Context<ContextData>,
+        ctx: FedifyContext,
         follow: Follow,
         identifier: string,
         sender: Actor,

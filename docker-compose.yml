@@ -2,6 +2,7 @@ services:
   activitypub:
     build: .
     ports:
+      - "8080:8080"
       - "9229:9229"
     volumes:
       - ./src:/opt/activitypub/src
@@ -28,7 +29,6 @@ services:
       - GCP_BUCKET_NAME=activitypub
       - GCP_STORAGE_EMULATOR_HOST=http://fake-gcs:4443
       # - GCS_LOCAL_STORAGE_HOSTING_URL=https://<tailscale-url>/.ghost/activitypub/gcs
-      - ACTIVITYPUB_COLLECTION_PAGE_SIZE=20
       - LOCAL_STORAGE_PATH=/opt/activitypub/content
       # - LOCAL_STORAGE_HOSTING_URL=https://<tailscale-url>/.ghost/activitypub/local-storage
       # - GHOST_PRO_IP_ADDRESSES=100.83.192.90,192.168.65.1
@@ -49,7 +49,7 @@ services:
         condition: service_healthy
 
   jaeger:
-    image: jaegertracing/all-in-one:1.73.0@sha256:fe884668a2bf8d586b6fb7697d48a6a19a02f9e78a1eddf09c5b0f08c27d63b9
+    image: jaegertracing/all-in-one:1.76.0@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac
     restart: always
     environment:
       COLLECTOR_ZIPKIN_HOST_PORT: :9411
@@ -64,21 +64,6 @@ services:
       mysql:
         condition: service_healthy
 
-  cleanup-expired-key-value-records:
-    build: jobs/cleanup-expired-key-value-records
-    environment:
-      - MYSQL_USER=ghost
-      - MYSQL_PASSWORD=password
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_DATABASE=activitypub
-
-  scripts:
-    build: dev/scripts
-    depends_on:
-      - activitypub
-      - fake-mastodon
-
   nginx:
     build: dev/nginx
     ports:
@@ -90,7 +75,7 @@ services:
       - activitypub
 
   mysql:
-    image: mysql:8.4.6@sha256:0a2a40b552410757015645e28f727f6ad18b7ff8a7cb697871ccadd238778dcb
+    image: mysql:8.4.8@sha256:a2d126916bc2ba79a890a4bf62d305eb8b68fcbdd35c6e582d529df18faf5ebb
     environment:
       - MYSQL_ROOT_PASSWORD=root
       - MYSQL_USER=ghost
@@ -104,7 +89,7 @@ services:
       retries: 120
 
   redis:
-    image: redis:7-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    image: redis:7-alpine@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     volumes:
       - ./dev/redis/start.sh:/usr/local/bin/start.sh
     command: /usr/local/bin/start.sh
@@ -168,7 +153,6 @@ services:
       - GCP_BUCKET_NAME=activitypub
       - GCS_LOCAL_STORAGE_HOSTING_URL=http://fake-gcs:4443/.ghost/activitypub/gcs
       - GCP_STORAGE_EMULATOR_HOST=http://fake-gcs:4443
-      - ACTIVITYPUB_COLLECTION_PAGE_SIZE=2
       - REDIS_HOST=redis-testing
       - REDIS_PORT=6379
       - FEDIFY_KV_STORE_TYPE=redis
@@ -202,15 +186,6 @@ services:
       mysql-testing:
         condition: service_healthy
 
-  cleanup-expired-key-value-records-testing:
-    build: jobs/cleanup-expired-key-value-records
-    environment:
-      - MYSQL_USER=ghost
-      - MYSQL_PASSWORD=password
-      - MYSQL_HOST=mysql-testing
-      - MYSQL_PORT=3306
-      - MYSQL_DATABASE=activitypub
-
   cucumber-tests:
     networks:
       - test_network
@@ -242,7 +217,7 @@ services:
   mysql-testing:
     networks:
       - test_network
-    image: mysql:8.4.6@sha256:0a2a40b552410757015645e28f727f6ad18b7ff8a7cb697871ccadd238778dcb
+    image: mysql:8.4.8@sha256:a2d126916bc2ba79a890a4bf62d305eb8b68fcbdd35c6e582d529df18faf5ebb
     environment:
       - MYSQL_ROOT_PASSWORD=root
       - MYSQL_USER=ghost
@@ -256,7 +231,7 @@ services:
   redis-testing:
     networks:
       - test_network
-    image: redis:7-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    image: redis:7-alpine@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     volumes:
       - ./dev/redis/start.sh:/usr/local/bin/start.sh
     command: /usr/local/bin/start.sh
@@ -296,11 +271,11 @@ services:
           - self.test
           - alice.test
           - bob.test
-          - carol.test
+          - charlie.test
           - fake-external-activitypub.test
-    image: caddy:2@sha256:4163a5c7b7631707956db4057720ec75de429992d5e3aa518d54872c01644dbe
+    image: caddy:2@sha256:9068f76202c0a03545036d32bf2d424d3b46c1174f254070f605002a2dbc9657
     ports:
-      - "443:443"
+      - "444:443"
     volumes:
       - ./dev/caddy-testing/Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
@@ -318,7 +293,7 @@ services:
   ghost-wiremock:
     networks:
       - test_network
-    image: wiremock/wiremock:3.13.1-1@sha256:d61e7720f89483fdef5366843b58d1dfd06bcce5828179c9f2f54de5c28354b0
+    image: wiremock/wiremock:3.13.2-1@sha256:8bdd64a25db911ba521a38aebf1590d96767c2d29f3e941e2f496a760bbdf47d
     entrypoint:
       [
         "/docker-entrypoint.sh",
@@ -332,7 +307,7 @@ services:
   external-wiremock:
     networks:
       - test_network
-    image: wiremock/wiremock:3.13.1-1@sha256:d61e7720f89483fdef5366843b58d1dfd06bcce5828179c9f2f54de5c28354b0
+    image: wiremock/wiremock:3.13.2-1@sha256:8bdd64a25db911ba521a38aebf1590d96767c2d29f3e941e2f496a760bbdf47d
     entrypoint:
       [
         "/docker-entrypoint.sh",
@@ -341,20 +316,6 @@ services:
         "--verbose",
         "--port=80",
         "--https-port=443",
-      ]
-
-  fake-mastodon:
-    networks:
-      test_network:
-        aliases:
-          - fake-mastodon.test
-    image: wiremock/wiremock:3.13.1-1@sha256:d61e7720f89483fdef5366843b58d1dfd06bcce5828179c9f2f54de5c28354b0
-    entrypoint:
-      [
-        "/docker-entrypoint.sh",
-        "--global-response-templating",
-        "--disable-gzip",
-        "--verbose",
       ]
 
   fake-gcs:

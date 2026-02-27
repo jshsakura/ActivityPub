@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EventEmitter } from 'node:events';
 
-import { AccountEntity } from '@/account/account.entity';
+import type { AccountEntity } from '@/account/account.entity';
 import {
     AccountBlockedEvent,
     AccountUnfollowedEvent,
@@ -11,15 +11,17 @@ import {
 import type { FeedService } from '@/feed/feed.service';
 import { FeedUpdateService } from '@/feed/feed-update.service';
 import { Audience, Post, PostType } from '@/post/post.entity';
+import type { KnexPostRepository } from '@/post/post.repository.knex';
 import { PostCreatedEvent } from '@/post/post-created.event';
 import { PostDeletedEvent } from '@/post/post-deleted.event';
 import { PostDerepostedEvent } from '@/post/post-dereposted.event';
 import { PostRepostedEvent } from '@/post/post-reposted.event';
-import { createInternalAccountDraftData } from '@/test/account-entity-test-helpers';
+import { createTestInternalAccount } from '@/test/account-entity-test-helpers';
 
 describe('FeedUpdateService', () => {
     let events: EventEmitter;
     let feedService: FeedService;
+    let postRepository: KnexPostRepository;
     let feedUpdateService: FeedUpdateService;
 
     let account: AccountEntity;
@@ -30,13 +32,19 @@ describe('FeedUpdateService', () => {
         events = new EventEmitter();
         feedService = {
             addPostToFeeds: vi.fn(),
+            addPostToDiscoveryFeeds: vi.fn(),
             removePostFromFeeds: vi.fn(),
+            removePostFromDiscoveryFeeds: vi.fn(),
             removeBlockedAccountPostsFromFeed: vi.fn(),
             removeBlockedDomainPostsFromFeed: vi.fn(),
             removeUnfollowedAccountPostsFromFeed: vi.fn(),
         } as unknown as FeedService;
 
-        const draftData = await createInternalAccountDraftData({
+        postRepository = {
+            getById: vi.fn(),
+        } as unknown as KnexPostRepository;
+
+        account = await createTestInternalAccount(456, {
             host: new URL('https://example.com'),
             username: 'foobar',
             name: 'Foo Bar',
@@ -47,14 +55,11 @@ describe('FeedUpdateService', () => {
             customFields: null,
         });
 
-        const draft = AccountEntity.draft(draftData);
-
-        account = AccountEntity.create({
-            id: 456,
-            ...draft,
-        });
-
-        feedUpdateService = new FeedUpdateService(events, feedService);
+        feedUpdateService = new FeedUpdateService(
+            events,
+            feedService,
+            postRepository,
+        );
         feedUpdateService.init();
     });
 
@@ -63,88 +68,193 @@ describe('FeedUpdateService', () => {
     });
 
     describe('handling a newly created post', () => {
-        it('should add public post to feeds when created', () => {
+        it('should add public post to user and discovery feeds when created', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.Public,
             });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = 123;
 
-            events.emit(PostCreatedEvent.getName(), new PostCreatedEvent(post));
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
+            events.emit(
+                PostCreatedEvent.getName(),
+                new PostCreatedEvent(post.id as number),
+            );
+
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(post.id);
             expect(feedService.addPostToFeeds).toHaveBeenCalledWith(post);
+            expect(feedService.addPostToDiscoveryFeeds).toHaveBeenCalledWith(
+                post,
+            );
         });
 
-        it('should add followers-only post to feeds when created', () => {
+        it('should add followers-only post to user and discovery feeds when created', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.FollowersOnly,
             });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = 123;
 
-            events.emit(PostCreatedEvent.getName(), new PostCreatedEvent(post));
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
+            events.emit(
+                PostCreatedEvent.getName(),
+                new PostCreatedEvent(post.id as number),
+            );
+
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(post.id);
             expect(feedService.addPostToFeeds).toHaveBeenCalledWith(post);
+            expect(feedService.addPostToDiscoveryFeeds).toHaveBeenCalledWith(
+                post,
+            );
         });
 
-        it('should not add direct post to feeds when created', () => {
+        it('should not add direct post to user nor discovery feeds when created', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.Direct,
             });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = 123;
 
-            events.emit(PostCreatedEvent.getName(), new PostCreatedEvent(post));
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
+            events.emit(
+                PostCreatedEvent.getName(),
+                new PostCreatedEvent(post.id as number),
+            );
+
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(post.id);
             expect(feedService.addPostToFeeds).not.toHaveBeenCalled();
+            expect(feedService.addPostToDiscoveryFeeds).not.toHaveBeenCalled();
+        });
+
+        it('should not add post to feeds if post was deleted', async () => {
+            vi.mocked(postRepository.getById).mockResolvedValue(null);
+
+            events.emit(PostCreatedEvent.getName(), new PostCreatedEvent(123));
+
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(123);
+            expect(feedService.addPostToFeeds).not.toHaveBeenCalled();
+            expect(feedService.addPostToDiscoveryFeeds).not.toHaveBeenCalled();
         });
     });
 
     describe('handling a reposted post', () => {
         const repostedById = 789;
+        const postId = 123;
 
-        it('should add public reposted post to feeds', () => {
+        it('should add public reposted post to user feeds', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.Public,
             });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = postId;
+
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
             events.emit(
                 PostRepostedEvent.getName(),
-                new PostRepostedEvent(post, repostedById),
+                new PostRepostedEvent(postId, repostedById),
             );
 
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(postId);
             expect(feedService.addPostToFeeds).toHaveBeenCalledWith(
                 post,
                 repostedById,
             );
         });
 
-        it('should add followers-only reposted post to feeds', () => {
+        it('should add followers-only reposted post to user feeds', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.FollowersOnly,
             });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = postId;
+
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
             events.emit(
                 PostRepostedEvent.getName(),
-                new PostRepostedEvent(post, repostedById),
+                new PostRepostedEvent(postId, repostedById),
             );
 
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(postId);
             expect(feedService.addPostToFeeds).toHaveBeenCalledWith(
                 post,
                 repostedById,
             );
         });
 
-        it('should not add direct reposted post to feeds', () => {
+        it('should NOT add direct reposted post to user feeds', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.Direct,
             });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = postId;
+
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
             events.emit(
                 PostRepostedEvent.getName(),
-                new PostRepostedEvent(post, repostedById),
+                new PostRepostedEvent(postId, repostedById),
             );
 
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(postId);
+            expect(feedService.addPostToFeeds).not.toHaveBeenCalled();
+        });
+
+        it('should NOT add reposted posts to discovery feeds', async () => {
+            const post = Post.createFromData(account, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = postId;
+
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+            events.emit(
+                PostRepostedEvent.getName(),
+                new PostRepostedEvent(postId, repostedById),
+            );
+
+            await vi.runAllTimersAsync();
+
+            expect(feedService.addPostToDiscoveryFeeds).not.toHaveBeenCalled();
+        });
+
+        it('should not add post to feeds if post was deleted', async () => {
+            vi.mocked(postRepository.getById).mockResolvedValue(null);
+
+            events.emit(
+                PostRepostedEvent.getName(),
+                new PostRepostedEvent(postId, repostedById),
+            );
+
+            await vi.runAllTimersAsync();
+
+            expect(postRepository.getById).toHaveBeenCalledWith(postId);
             expect(feedService.addPostToFeeds).not.toHaveBeenCalled();
         });
     });
@@ -152,18 +262,27 @@ describe('FeedUpdateService', () => {
     describe('handling a deleted post', () => {
         const deletedById = 789;
 
-        it('should remove post from feeds when deleted', () => {
+        it('should remove post from feeds when deleted', async () => {
             const post = Post.createFromData(account, {
                 type: PostType.Article,
                 audience: Audience.Public,
             });
+
+            // Simulate a saved post with an id
+            // biome-ignore lint/suspicious/noExplicitAny: Test helper to set post id
+            (post as any).id = 123;
 
             events.emit(
                 PostDeletedEvent.getName(),
                 new PostDeletedEvent(post, deletedById),
             );
 
-            expect(feedService.removePostFromFeeds).toHaveBeenCalledWith(post);
+            await vi.runAllTimersAsync();
+
+            expect(feedService.removePostFromFeeds).toHaveBeenCalledWith(123);
+            expect(
+                feedService.removePostFromDiscoveryFeeds,
+            ).toHaveBeenCalledWith(post);
         });
     });
 
@@ -171,18 +290,15 @@ describe('FeedUpdateService', () => {
         const derepostedById = 789;
 
         it('should remove reposted post from feeds when dereposted', () => {
-            const post = Post.createFromData(account, {
-                type: PostType.Article,
-                audience: Audience.Public,
-            });
+            const postId = 123;
 
             events.emit(
                 PostDerepostedEvent.getName(),
-                new PostDerepostedEvent(post, derepostedById),
+                new PostDerepostedEvent(postId, derepostedById),
             );
 
             expect(feedService.removePostFromFeeds).toHaveBeenCalledWith(
-                post,
+                postId,
                 derepostedById,
             );
         });
@@ -190,7 +306,7 @@ describe('FeedUpdateService', () => {
 
     describe('handling a blocked account', () => {
         it('should remove blocked account posts from feeds', async () => {
-            const draftData = await createInternalAccountDraftData({
+            const blockedAccount = await createTestInternalAccount(789, {
                 host: new URL('https://example.com'),
                 username: 'bazqux',
                 name: 'Baz Qux',
@@ -201,13 +317,6 @@ describe('FeedUpdateService', () => {
                 ),
                 url: new URL('https://blocked.com/users/789'),
                 customFields: null,
-            });
-
-            const draft = AccountEntity.draft(draftData);
-
-            const blockedAccount = AccountEntity.create({
-                id: 789,
-                ...draft,
             });
 
             events.emit(

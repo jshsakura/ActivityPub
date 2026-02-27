@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
     type Actor,
     CollectionPage,
@@ -116,28 +118,25 @@ export class AccountFollowsView {
                 ? (next + FOLLOWS_LIMIT).toString()
                 : null;
 
+        const blockedDomains = await this.moderationService.getBlockedDomains(
+            siteDefaultAccount.id,
+        );
+
         const accounts: MinimalAccountDTO[] = [];
 
         for (const result of results) {
-            const domainBlockedByMe =
-                await this.moderationService.domainIsBlocked(
-                    siteDefaultAccount.id,
-                    new URL(result.ap_id),
-                );
+            const apIdUrl = new URL(result.ap_id);
 
             accounts.push({
                 id: result.ap_id,
                 apId: result.ap_id,
                 name: result.name || '',
-                handle: getAccountHandle(
-                    new URL(result.ap_id).host,
-                    result.username,
-                ),
+                handle: getAccountHandle(apIdUrl.host, result.username),
                 avatarUrl: result.avatar_url || '',
                 isFollowing: !!result.followed_by_me,
                 followedByMe: !!result.followed_by_me,
                 blockedByMe: !!result.blocked_by_me,
-                domainBlockedByMe,
+                domainBlockedByMe: blockedDomains.has(apIdUrl.hostname),
             });
         }
 
@@ -312,71 +311,79 @@ export class AccountFollowsView {
         });
         const accounts: MinimalAccountDTO[] = [];
 
+        const followsHrefs = followsList.map((item) => item.href);
+        if (followsHrefs.length === 0) {
+            return [];
+        }
+
+        const accountsData = await this.db('accounts')
+            .select('accounts.*')
+            .select(
+                this.db.raw(`
+                    CASE
+                        WHEN follows.follower_id IS NOT NULL THEN 1
+                        ELSE 0
+                    END AS followed_by_me
+                `),
+                this.db.raw(`
+                    CASE
+                        WHEN blocks.blocker_id IS NOT NULL THEN 1
+                        ELSE 0
+                    END AS blocked_by_me
+                `),
+            )
+            .leftJoin('follows', function () {
+                this.on('follows.following_id', '=', 'accounts.id').andOnVal(
+                    'follows.follower_id',
+                    '=',
+                    siteDefaultAccount.id,
+                );
+            })
+            .leftJoin('blocks', function () {
+                this.on('blocks.blocked_id', '=', 'accounts.id').andOnVal(
+                    'blocks.blocker_id',
+                    '=',
+                    siteDefaultAccount.id,
+                );
+            })
+            .whereRaw(
+                `accounts.ap_id_hash IN (${followsHrefs.map(() => 'UNHEX(SHA2(?, 256))').join(', ')})`,
+                followsHrefs,
+            );
+
+        const accountsMap = new Map(
+            accountsData.map((acc) => [
+                Buffer.from(acc.ap_id_hash).toString('hex'),
+                acc,
+            ]),
+        );
+
+        const blockedDomains = await this.moderationService.getBlockedDomains(
+            siteDefaultAccount.id,
+        );
+
         for await (const item of followsList) {
             try {
-                const followeeAccount = await this.db('accounts')
-                    .select('accounts.*')
-                    .select(
-                        this.db.raw(`
-                            CASE
-                                WHEN follows.follower_id IS NOT NULL THEN 1
-                                ELSE 0
-                            END AS followed_by_me
-                        `),
-                        this.db.raw(`
-                            CASE
-                                WHEN blocks.blocker_id IS NOT NULL THEN 1
-                                ELSE 0
-                            END AS blocked_by_me
-                        `),
-                    )
-                    .leftJoin('follows', function () {
-                        this.on(
-                            'follows.following_id',
-                            '=',
-                            'accounts.id',
-                        ).andOnVal(
-                            'follows.follower_id',
-                            '=',
-                            siteDefaultAccount.id,
-                        );
-                    })
-                    .leftJoin('blocks', function () {
-                        this.on(
-                            'blocks.blocked_id',
-                            '=',
-                            'accounts.id',
-                        ).andOnVal(
-                            'blocks.blocker_id',
-                            '=',
-                            siteDefaultAccount.id,
-                        );
-                    })
-                    .whereRaw('accounts.ap_id_hash = UNHEX(SHA2(?, 256))', [
-                        item.href,
-                    ])
-                    .first();
+                const followeeAccount = accountsMap.get(
+                    createHash('sha256').update(item.href).digest('hex'),
+                );
 
                 if (followeeAccount) {
-                    const domainBlockedByMe =
-                        await this.moderationService.domainIsBlocked(
-                            siteDefaultAccount.id,
-                            new URL(followeeAccount.ap_id),
-                        );
+                    const apIdUrl = new URL(followeeAccount.ap_id);
 
                     accounts.push({
                         id: followeeAccount.ap_id,
                         apId: followeeAccount.ap_id,
                         name: followeeAccount.name || '',
                         handle: getAccountHandle(
-                            new URL(followeeAccount.ap_id).host,
+                            apIdUrl.host,
                             followeeAccount.username,
                         ),
                         avatarUrl: followeeAccount.avatar_url || '',
                         isFollowing: !!followeeAccount.followed_by_me,
                         followedByMe: !!followeeAccount.followed_by_me,
                         blockedByMe: !!followeeAccount.blocked_by_me,
-                        domainBlockedByMe,
+                        domainBlockedByMe: blockedDomains.has(apIdUrl.hostname),
                     });
                 } else {
                     const followsActorObj = await lookupObject(item.href, {
@@ -395,12 +402,6 @@ export class AccountFollowsView {
                         continue;
                     }
 
-                    const domainBlockedByMe =
-                        await this.moderationService.domainIsBlocked(
-                            siteDefaultAccount.id,
-                            item,
-                        );
-
                     accounts.push({
                         id: followsActor.id,
                         apId: followsActor.id,
@@ -413,7 +414,7 @@ export class AccountFollowsView {
                         isFollowing: false,
                         followedByMe: false,
                         blockedByMe: false,
-                        domainBlockedByMe,
+                        domainBlockedByMe: blockedDomains.has(item.hostname),
                     });
                 }
             } catch (_err) {

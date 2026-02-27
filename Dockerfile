@@ -1,4 +1,4 @@
-FROM node:22.18.0-alpine@sha256:61f197dffff783f6e8f3cd5bb6b9f40ff03faee65273f0208304624d2ac6182c
+FROM node:22.22.0-alpine@sha256:28e7e5a388aec9f9c6b6e995ae3821462d318fe2469b6077b57c099973c9ea75
 
 RUN apk add python3 g++ make
 RUN apk add --no-cache ca-certificates
@@ -8,7 +8,7 @@ WORKDIR /opt/activitypub
 COPY package.json .
 COPY yarn.lock .
 
-RUN yarn && \
+RUN yarn --ignore-scripts && \
     yarn cache clean
 
 COPY tsconfig.json .

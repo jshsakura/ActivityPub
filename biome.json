@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/package.json", "!**/__snapshots__/**"]
+    "includes": ["**", "!**/package.json", "!**/__snapshots__"]
   },
   "formatter": {
     "enabled": true,
@@ -23,7 +23,7 @@
             "groups": [
               ["vitest", "@cucumber/cucumber"],
               ":BLANK_LINE:",
-              ":NODE:",
+              [":NODE:", ":BUN:"],
               ":BLANK_LINE:",
               ":PACKAGE:",
               ":BLANK_LINE:",

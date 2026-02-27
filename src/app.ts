@@ -20,8 +20,9 @@ import {
     Undo,
     Update,
 } from '@fedify/fedify';
-import { federation } from '@fedify/fedify/x/hono';
+import { federation } from '@fedify/hono';
 import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import {
     configure,
     getAnsiColorFormatter,
@@ -39,7 +40,15 @@ import { cors } from 'hono/cors';
 import { behindProxy } from 'x-forwarded-fetch';
 
 import type { Account } from '@/account/account.entity';
-import type { KnexAccountRepository } from '@/account/account.repository.knex';
+import { AccountBlockedEvent } from '@/account/events/account-blocked.event';
+import { AccountCreatedEvent } from '@/account/events/account-created.event';
+import { AccountFollowedEvent } from '@/account/events/account-followed.event';
+import { AccountUnblockedEvent } from '@/account/events/account-unblocked.event';
+import { AccountUnfollowedEvent } from '@/account/events/account-unfollowed.event';
+import { AccountUpdatedEvent } from '@/account/events/account-updated.event';
+import { DomainBlockedEvent } from '@/account/events/domain-blocked.event';
+import { DomainUnblockedEvent } from '@/account/events/domain-unblocked.event';
+import { NotificationsReadEvent } from '@/account/events/notifications-read-event';
 import { dispatchRejectActivity } from '@/activity-dispatchers/reject.dispatcher';
 import type { CreateHandler } from '@/activity-handlers/create.handler';
 import type { DeleteHandler } from '@/activity-handlers/delete.handler';
@@ -71,7 +80,6 @@ import {
 } from '@/dispatchers';
 import type { EventSerializer } from '@/events/event';
 import type { createIncomingPubSubMessageHandler } from '@/events/pubsub-http';
-import type { GhostExploreService } from '@/explore/ghost-explore.service';
 import type { FeedUpdateService } from '@/feed/feed-update.service';
 import type { GhostPostService } from '@/ghost/ghost-post.service';
 import { getTraceContext } from '@/helpers/context-header';
@@ -79,6 +87,7 @@ import { AccountController } from '@/http/api/account.controller';
 import { BlockController } from '@/http/api/block.controller';
 import { BlueskyController } from '@/http/api/bluesky.controller';
 import { ClientConfigController } from '@/http/api/client-config.controller';
+import { ExploreController } from '@/http/api/explore.controller';
 import { FeedController } from '@/http/api/feed.controller';
 import { FollowController } from '@/http/api/follow.controller';
 import { BadRequest } from '@/http/api/helpers/response';
@@ -86,11 +95,16 @@ import { LikeController } from '@/http/api/like.controller';
 import { MediaController } from '@/http/api/media.controller';
 import { NotificationController } from '@/http/api/notification.controller';
 import { PostController } from '@/http/api/post.controller';
+import { RecommendationsController } from '@/http/api/recommendations.controller';
 import { ReplyChainController } from '@/http/api/reply-chain.controller';
 import { SearchController } from '@/http/api/search.controller';
 import type { SiteController } from '@/http/api/site.controller';
+import { TopicController } from '@/http/api/topic.controller';
 import { WebFingerController } from '@/http/api/webfinger.controller';
 import type { WebhookController } from '@/http/api/webhook.controller';
+import type { HostDataContextLoader } from '@/http/host-data-context-loader';
+import { createDeploymentHeadersMiddleware } from '@/http/middleware/deployment-headers';
+import { createHostDataContextMiddleware } from '@/http/middleware/host-data-context';
 import {
     createRoleMiddleware,
     GhostRole,
@@ -98,17 +112,19 @@ import {
 } from '@/http/middleware/role-guard';
 import { RouteRegistry } from '@/http/routing/route-registry';
 import { setupInstrumentation, spanWrapper } from '@/instrumentation';
-import type { BlueskyService } from '@/integration/bluesky.service';
 import {
     createPushMessageHandler,
     type GCloudPubSubPushMessageQueue,
 } from '@/mq/gcloud-pubsub-push/mq';
 import type { NotificationEventService } from '@/notification/notification-event.service';
+import { PostCreatedEvent } from '@/post/post-created.event';
+import { PostDerepostedEvent } from '@/post/post-dereposted.event';
 import type { PostInteractionCountsService } from '@/post/post-interaction-counts.service';
 import { PostInteractionCountsUpdateRequestedEvent } from '@/post/post-interaction-counts-update-requested.event';
-import type { Site, SiteService } from '@/site/site.service';
-
-await setupInstrumentation();
+import { PostLikedEvent } from '@/post/post-liked.event';
+import { PostRepostedEvent } from '@/post/post-reposted.event';
+import { PostUpdatedEvent } from '@/post/post-updated.event';
+import type { Site } from '@/site/site.service';
 
 function toLogLevel(level: unknown): LogLevel | null {
     if (typeof level !== 'string') {
@@ -140,7 +156,12 @@ await configure({
                   }),
         }),
     },
-    filters: {},
+    filters: {
+        suppressHttpSignatureVerification: (record: LogRecord) =>
+            !record.message
+                .join('')
+                .includes("Failed to verify the request's HTTP Signatures"),
+    },
     loggers: [
         {
             category: 'activitypub',
@@ -153,10 +174,16 @@ await configure({
         {
             category: 'fedify',
             sinks: ['console'],
+            filters: ['suppressHttpSignatureVerification'],
             level:
                 toLogLevel(process.env.LOG_LEVEL_FEDIFY) ||
                 toLogLevel(process.env.LOG_LEVEL) ||
                 'warning',
+        },
+        {
+            category: ['fedify', 'federation', 'actor'],
+            sinks: ['console'],
+            level: 'error',
         },
         {
             category: ['logtape', 'meta'],
@@ -175,6 +202,8 @@ export type ContextData = {
 registerDependencies(container, { knex });
 
 const globalLogging = container.resolve<Logger>('logging');
+
+await setupInstrumentation(globalLogging);
 
 // Init queue
 const globalQueue = container.resolve<GCloudPubSubPushMessageQueue>('queue');
@@ -209,11 +238,9 @@ if (process.env.MANUALLY_START_QUEUE === 'true') {
 }
 
 // Initialize services that need it
-container.resolve<BlueskyService>('blueskyService').init();
 container.resolve<FediverseBridge>('fediverseBridge').init();
 container.resolve<FeedUpdateService>('feedUpdateService').init();
 container.resolve<NotificationEventService>('notificationEventService').init();
-container.resolve<GhostExploreService>('ghostExploreService').init();
 container.resolve<GhostPostService>('ghostPostService').init();
 container
     .resolve<PostInteractionCountsService>('postInteractionCountsService')
@@ -224,6 +251,48 @@ container
         PostInteractionCountsUpdateRequestedEvent.getName(),
         PostInteractionCountsUpdateRequestedEvent,
     );
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(AccountCreatedEvent.getName(), AccountCreatedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(AccountUpdatedEvent.getName(), AccountUpdatedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(AccountFollowedEvent.getName(), AccountFollowedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(AccountUnfollowedEvent.getName(), AccountUnfollowedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(AccountBlockedEvent.getName(), AccountBlockedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(AccountUnblockedEvent.getName(), AccountUnblockedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(DomainBlockedEvent.getName(), DomainBlockedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(DomainUnblockedEvent.getName(), DomainUnblockedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(NotificationsReadEvent.getName(), NotificationsReadEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(PostDerepostedEvent.getName(), PostDerepostedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(PostLikedEvent.getName(), PostLikedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(PostRepostedEvent.getName(), PostRepostedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(PostUpdatedEvent.getName(), PostUpdatedEvent);
+container
+    .resolve<EventSerializer>('eventSerializer')
+    .register(PostCreatedEvent.getName(), PostCreatedEvent);
 
 /** Fedify */
 
@@ -232,9 +301,9 @@ container
  * for example in the context of the Inbox Queue - so we need to wrap handlers with this.
  */
 function ensureCorrectContext<B, R>(
-    fn: (ctx: Context<ContextData>, b: B) => Promise<R>,
+    fn: (ctx: FedifyContext, b: B) => Promise<R>,
 ) {
-    return async (ctx: Context<ContextData>, b: B) => {
+    return async (ctx: FedifyContext, b: B) => {
         if (!ctx.data) {
             // TODO: Clean up the any type
             // biome-ignore lint/suspicious/noExplicitAny: Legacy code needs proper typing
@@ -260,7 +329,7 @@ globalFedify
     // actorDispatcher uses RequestContext so doesn't need the ensureCorrectContext wrapper
     .setActorDispatcher(
         '/.ghost/activitypub/users/{identifier}',
-        spanWrapper((ctx: RequestContext<ContextData>, identifier: string) => {
+        spanWrapper((ctx: FedifyRequestContext, identifier: string) => {
             const actorDispatcher = container.resolve('actorDispatcher');
             return actorDispatcher(ctx, identifier);
         }),
@@ -270,7 +339,7 @@ globalFedify
     })
     .setKeyPairsDispatcher(
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, identifier: string) => {
+            spanWrapper((ctx: FedifyContext, identifier: string) => {
                 const keypairDispatcher =
                     container.resolve('keypairDispatcher');
                 return keypairDispatcher(ctx, identifier);
@@ -278,16 +347,18 @@ globalFedify
         ),
     );
 
-const inboxListener = globalFedify.setInboxListeners(
-    '/.ghost/activitypub/inbox/{identifier}',
-    '/.ghost/activitypub/inbox',
-);
+const inboxListener = globalFedify
+    .setInboxListeners(
+        '/.ghost/activitypub/inbox/{identifier}',
+        '/.ghost/activitypub/inbox',
+    )
+    .withIdempotency('per-inbox');
 
 inboxListener
     .on(
         Follow,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Follow) => {
+            spanWrapper((ctx: FedifyContext, activity: Follow) => {
                 const followHandler =
                     container.resolve<FollowHandler>('followHandler');
                 return followHandler.handle(ctx, activity);
@@ -298,7 +369,7 @@ inboxListener
     .on(
         Accept,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Accept) => {
+            spanWrapper((ctx: FedifyContext, activity: Accept) => {
                 const acceptHandler = container.resolve('acceptHandler');
                 return acceptHandler(ctx, activity);
             }),
@@ -308,7 +379,7 @@ inboxListener
     .on(
         Create,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Create) => {
+            spanWrapper((ctx: FedifyContext, activity: Create) => {
                 const createHandler =
                     container.resolve<CreateHandler>('createHandler');
                 return createHandler.handle(ctx, activity);
@@ -319,7 +390,7 @@ inboxListener
     .on(
         Delete,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Delete) => {
+            spanWrapper((ctx: FedifyContext, activity: Delete) => {
                 const deleteHandler =
                     container.resolve<DeleteHandler>('deleteHandler');
                 return deleteHandler.handle(ctx, activity);
@@ -330,7 +401,7 @@ inboxListener
     .on(
         Announce,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Announce) => {
+            spanWrapper((ctx: FedifyContext, activity: Announce) => {
                 const announceHandler = container.resolve('announceHandler');
                 return announceHandler(ctx, activity);
             }),
@@ -340,7 +411,7 @@ inboxListener
     .on(
         Like,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Like) => {
+            spanWrapper((ctx: FedifyContext, activity: Like) => {
                 const likeHandler = container.resolve('likeHandler');
                 return likeHandler(ctx, activity);
             }),
@@ -350,7 +421,7 @@ inboxListener
     .on(
         Undo,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Undo) => {
+            spanWrapper((ctx: FedifyContext, activity: Undo) => {
                 const undoHandler = container.resolve('undoHandler');
                 return undoHandler(ctx, activity);
             }),
@@ -360,7 +431,7 @@ inboxListener
     .on(
         Update,
         ensureCorrectContext(
-            spanWrapper((ctx: Context<ContextData>, activity: Update) => {
+            spanWrapper((ctx: FedifyContext, activity: Update) => {
                 const updateHandler =
                     container.resolve<UpdateHandler>('updateHandler');
                 return updateHandler.handle(ctx, activity);
@@ -372,14 +443,14 @@ inboxListener
 globalFedify
     .setFollowersDispatcher(
         '/.ghost/activitypub/followers/{identifier}',
-        spanWrapper((ctx: Context<ContextData>, identifier: string) => {
+        spanWrapper((ctx: FedifyContext, identifier: string) => {
             const followersDispatcher = container.resolve(
                 'followersDispatcher',
             );
             return followersDispatcher(ctx, identifier);
         }),
     )
-    .setCounter((ctx: RequestContext<ContextData>, identifier: string) => {
+    .setCounter((ctx: FedifyRequestContext, identifier: string) => {
         const followersCounter = container.resolve('followersCounter');
         return followersCounter(ctx, identifier);
     });
@@ -389,7 +460,7 @@ globalFedify
         '/.ghost/activitypub/following/{identifier}',
         spanWrapper(
             (
-                ctx: RequestContext<ContextData>,
+                ctx: FedifyRequestContext,
                 identifier: string,
                 cursor: string | null,
             ) => {
@@ -400,7 +471,7 @@ globalFedify
             },
         ),
     )
-    .setCounter((ctx: RequestContext<ContextData>, identifier: string) => {
+    .setCounter((ctx: FedifyRequestContext, identifier: string) => {
         const followingCounter = container.resolve('followingCounter');
         return followingCounter(ctx, identifier);
     })
@@ -411,7 +482,7 @@ globalFedify
         '/.ghost/activitypub/outbox/{identifier}',
         spanWrapper(
             (
-                ctx: RequestContext<ContextData>,
+                ctx: FedifyRequestContext,
                 identifier: string,
                 cursor: string | null,
             ) => {
@@ -420,7 +491,7 @@ globalFedify
             },
         ),
     )
-    .setCounter((ctx: RequestContext<ContextData>) => {
+    .setCounter((ctx: FedifyRequestContext) => {
         const outboxCounter = container.resolve('outboxCounter');
         return outboxCounter(ctx);
     })
@@ -487,13 +558,11 @@ globalFedify.setObjectDispatcher(
 globalFedify.setObjectDispatcher(
     Delete,
     '/.ghost/activitypub/delete/{id}',
-    spanWrapper(
-        (ctx: RequestContext<ContextData>, data: Record<'id', string>) => {
-            const deleteDispatcher =
-                container.resolve<DeleteDispatcher>('deleteDispatcher');
-            return deleteDispatcher.dispatch(ctx, data);
-        },
-    ),
+    spanWrapper((ctx: FedifyRequestContext, data: Record<'id', string>) => {
+        const deleteDispatcher =
+            container.resolve<DeleteDispatcher>('deleteDispatcher');
+        return deleteDispatcher.dispatch(ctx, data);
+    }),
 );
 globalFedify.setNodeInfoDispatcher(
     '/.ghost/activitypub/nodeinfo/2.1',
@@ -524,6 +593,41 @@ app.get('/ping', (_ctx) => {
         status: 200,
     });
 });
+
+/** Static file serving for local dev */
+
+if (process.env.NODE_ENV === 'development') {
+    if (process.env.LOCAL_STORAGE_PATH) {
+        app.use(
+            '/.ghost/activitypub/local-storage/*',
+            serveStatic({
+                root: process.env.LOCAL_STORAGE_PATH,
+                rewriteRequestPath: (path) =>
+                    path.replace('/.ghost/activitypub/local-storage', ''),
+            }),
+        );
+    }
+
+    if (process.env.GCP_STORAGE_EMULATOR_HOST) {
+        const gcsBucket = process.env.GCP_BUCKET_NAME!;
+
+        app.get('/.ghost/activitypub/gcs/*', async (ctx) => {
+            const gcsPath = ctx.req.path.replace(
+                '/.ghost/activitypub/gcs/',
+                '',
+            );
+            // fake-gcs-server serves objects at /download/storage/v1/b/{bucket}/o/{object}
+            const gcsUrl = `${process.env.GCP_STORAGE_EMULATOR_HOST}/download/storage/v1/b/${gcsBucket}/o/${encodeURIComponent(gcsPath)}?alt=media`;
+
+            const response = await fetch(gcsUrl);
+
+            return new Response(response.body, {
+                status: response.status,
+                headers: response.headers,
+            });
+        });
+    }
+}
 
 /** Middleware */
 
@@ -611,6 +715,8 @@ app.use(async (c, next) => {
     }
 });
 
+app.use(createDeploymentHeadersMiddleware(process.env.NODE_ENV || ''));
+
 app.use(async (ctx, next) => {
     if (ctx.req.url.endsWith('/')) {
         return ctx.redirect(ctx.req.url.slice(0, -1));
@@ -618,16 +724,11 @@ app.use(async (ctx, next) => {
     return next();
 });
 
-// Track in-flight requests
-let activeRequests = 0;
-
 app.use(async (ctx, next) => {
     const id = crypto.randomUUID();
     const start = Date.now();
 
-    activeRequests++;
-
-    ctx.get('logger').info('{method} {host} {url} {id}', {
+    ctx.get('logger').debug('{method} {host} {url} {id}', {
         id,
         method: ctx.req.method.toUpperCase(),
         host: ctx.req.header('host'),
@@ -637,10 +738,9 @@ app.use(async (ctx, next) => {
     try {
         await next();
     } finally {
-        activeRequests--;
         const end = Date.now();
 
-        ctx.get('logger').info(
+        ctx.get('logger').debug(
             '{method} {host} {url} {id} {status} {duration}ms',
             {
                 id,
@@ -725,61 +825,11 @@ app.delete(
     }),
 );
 
-/**
- * Essentially Auth middleware and also handles the multitenancy
- */
-app.use(async (ctx, next) => {
-    const request = ctx.req;
-    const host = request.header('host');
-    if (!host) {
-        ctx.get('logger').info('No Host header');
-        return new Response('No Host header', {
-            status: 401,
-        });
-    }
-    const siteService = container.resolve<SiteService>('siteService');
-    const site = await siteService.getSiteByHost(host);
-
-    if (!site) {
-        ctx.get('logger').info('No site found for {host}', { host });
-        return new Response(
-            JSON.stringify({
-                error: 'Forbidden',
-                code: 'SITE_MISSING',
-            }),
-            {
-                status: 403,
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-            },
-        );
-    }
-
-    ctx.set('site', site);
-
-    await next();
-});
-
-app.use(async (ctx, next) => {
-    const site = ctx.get('site');
-
-    try {
-        const accountRepository =
-            container.resolve<KnexAccountRepository>('accountRepository');
-        const account = await accountRepository.getBySite(ctx.get('site'));
-        ctx.set('account', account);
-
-        await next();
-    } catch (_err) {
-        ctx.get('logger').error('No account found for {host}', {
-            host: site.host,
-        });
-        return new Response('No account found', {
-            status: 401,
-        });
-    }
-});
+app.use(
+    createHostDataContextMiddleware(
+        container.resolve<HostDataContextLoader>('hostDataContextLoader'),
+    ),
+);
 
 /** Custom API routes */
 
@@ -802,7 +852,7 @@ function validateWebhook() {
 
         const now = Date.now();
 
-        if (Math.abs(now - Number.parseInt(timestamp)) > 5 * 60 * 1000) {
+        if (Math.abs(now - Number.parseInt(timestamp, 10)) > 5 * 60 * 1000) {
             return new Response(null, {
                 status: 401,
             });
@@ -883,7 +933,12 @@ routeRegistry.registerController(
     ClientConfigController,
 );
 routeRegistry.registerController('blueskyController', BlueskyController);
-
+routeRegistry.registerController('exploreController', ExploreController);
+routeRegistry.registerController('topicController', TopicController);
+routeRegistry.registerController(
+    'recommendationsController',
+    RecommendationsController,
+);
 // Mount all registered routes
 routeRegistry.mountRoutes(app, container);
 
@@ -938,7 +993,7 @@ function forceAcceptHeader(fn: (req: Request) => unknown) {
 serve(
     {
         fetch: forceAcceptHeader(behindProxy(app.fetch)),
-        port: Number.parseInt(process.env.PORT || '8080'),
+        port: Number.parseInt(process.env.PORT || '8080', 10),
     },
     (info) => {
         globalLogging.info(
@@ -954,30 +1009,10 @@ let isShuttingDown = false;
 async function gracefulShutdown(signal: 'SIGINT' | 'SIGTERM') {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    globalLogging.info(
-        `Received ${signal}, shutting down gracefully. Active requests: ${activeRequests}`,
-    );
-    const requestMonitor = setInterval(() => {
-        if (activeRequests > 0) {
-            globalLogging.info(
-                `Waiting for ${activeRequests} in-flight requests to complete...`,
-            );
-        }
-    }, 1000);
+    globalLogging.info(`Received ${signal}, shutting down gracefully.`);
     try {
         const maxWaitTime = 9000;
-        const startTime = Date.now();
-        while (activeRequests > 0 && Date.now() - startTime < maxWaitTime) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-        if (activeRequests > 0) {
-            globalLogging.warn(
-                `Shutting down with ${activeRequests} requests still in flight`,
-            );
-        } else {
-            globalLogging.info('All requests completed');
-        }
-        clearInterval(requestMonitor);
+        await new Promise((resolve) => setTimeout(resolve, maxWaitTime));
         await knex.destroy();
         globalLogging.info('DB connection closed');
         await Sentry.close(1000);
@@ -990,7 +1025,6 @@ async function gracefulShutdown(signal: 'SIGINT' | 'SIGTERM') {
             },
         );
     } finally {
-        clearInterval(requestMonitor);
         process.exit(0);
     }
 }

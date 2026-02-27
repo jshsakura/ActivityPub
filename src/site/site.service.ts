@@ -4,12 +4,13 @@ import type { Knex } from 'knex';
 
 import type { AccountService } from '@/account/account.service';
 import type { InternalAccountData } from '@/account/types';
-import type { getSiteSettings } from '@/helpers/ghost';
+import type { getSiteSettings, SiteSettings } from '@/helpers/ghost';
 
 export type Site = {
     id: number;
     host: string;
     webhook_secret: string;
+    ghost_uuid: string | null;
 };
 
 export interface IGhostService {
@@ -23,30 +24,51 @@ export class SiteService {
         private ghostService: IGhostService,
     ) {}
 
-    private async createSite(host: string, isGhostPro: boolean): Promise<Site> {
-        const rows = await this.client
+    private async createSite(
+        host: string,
+        ghostUuid: string | null = null,
+        isGhostPro: boolean,
+    ): Promise<Site> {
+        const hostExists = await this.client
             .select('*')
             .from('sites')
-            .where({ host });
+            .where({ host })
+            .first();
 
-        if (rows && rows.length !== 0) {
+        if (hostExists) {
             throw new Error(`Site already exists for ${host}`);
         }
 
         const webhook_secret = crypto.randomBytes(32).toString('hex');
-        const [id] = await this.client
-            .insert({
+
+        return await this.client.transaction(async (trx) => {
+            if (ghostUuid !== null) {
+                const uuidExists = await trx('sites')
+                    .select('*')
+                    .where({ ghost_uuid: ghostUuid })
+                    .first();
+
+                if (uuidExists) {
+                    await trx('sites')
+                        .where({ ghost_uuid: ghostUuid })
+                        .update({ ghost_uuid: null });
+                }
+            }
+
+            const [id] = await trx('sites').insert({
                 host,
                 webhook_secret,
                 ghost_pro: isGhostPro,
-            })
-            .into('sites');
+                ghost_uuid: ghostUuid,
+            });
 
-        return {
-            id,
-            host,
-            webhook_secret,
-        };
+            return {
+                id,
+                host,
+                webhook_secret,
+                ghost_uuid: ghostUuid,
+            };
+        });
     }
 
     public async getSiteByHost(host: string): Promise<Site | null> {
@@ -66,6 +88,7 @@ export class SiteService {
             id: rows[0].id,
             host: rows[0].host,
             webhook_secret: rows[0].webhook_secret,
+            ghost_uuid: rows[0].ghost_uuid || null,
         };
     }
 
@@ -76,8 +99,16 @@ export class SiteService {
         const existingSite = await this.getSiteByHost(host);
 
         let site: Site;
+        let settings: SiteSettings | undefined;
+
         if (existingSite === null) {
-            site = await this.createSite(host, isGhostPro);
+            settings = await this.getSiteSettings(host);
+
+            site = await this.createSite(
+                host,
+                settings.site.site_uuid,
+                isGhostPro,
+            );
         } else {
             site = existingSite;
         }
@@ -91,14 +122,14 @@ export class SiteService {
             null;
 
         if (existingAccount === null) {
-            const settings = await this.ghostService.getSiteSettings(site.host);
+            settings ??= await this.getSiteSettings(host);
 
             const internalAccountData: InternalAccountData = {
                 username: 'index',
-                name: settings?.site?.title,
-                bio: settings?.site?.description || null,
-                avatar_url: settings?.site?.icon || null,
-                banner_image_url: settings?.site?.cover_image || null,
+                name: settings.site.title,
+                bio: settings.site.description,
+                avatar_url: settings.site.icon,
+                banner_image_url: settings.site.cover_image,
             };
 
             await this.accountService.createInternalAccount(
@@ -114,5 +145,15 @@ export class SiteService {
         const result = await this.client.delete().from('sites').where({ host });
 
         return result === 1;
+    }
+
+    private async getSiteSettings(host: string): Promise<SiteSettings> {
+        const settings = await this.ghostService.getSiteSettings(host);
+
+        if (!settings?.site?.site_uuid) {
+            throw new Error(`Site ${host} has no site_uuid`);
+        }
+
+        return settings;
     }
 }

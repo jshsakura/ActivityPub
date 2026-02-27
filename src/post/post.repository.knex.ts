@@ -65,6 +65,9 @@ interface PostRow {
     author_url: string | null;
     author_ap_followers_url: string | null;
     author_ap_inbox_url: string | null;
+    author_ap_outbox_url: string | null;
+    author_ap_following_url: string | null;
+    author_ap_liked_url: string | null;
     site_id: number | null;
     site_host: string | null;
 }
@@ -77,6 +80,9 @@ export interface Outbox {
     nextCursor: string | null;
 }
 
+/**
+ * TODO: Should pull events from Post entity - @see ADR-0003
+ */
 export class KnexPostRepository {
     constructor(
         private readonly db: Knex,
@@ -126,6 +132,9 @@ export class KnexPostRepository {
                 'accounts.url as author_url',
                 'accounts.ap_followers_url as author_ap_followers_url',
                 'accounts.ap_inbox_url as author_ap_inbox_url',
+                'accounts.ap_outbox_url as author_ap_outbox_url',
+                'accounts.ap_following_url as author_ap_following_url',
+                'accounts.ap_liked_url as author_ap_liked_url',
                 'sites.id as site_id',
                 'sites.host as site_host',
             )
@@ -417,7 +426,7 @@ export class KnexPostRepository {
                         const shouldUseAtomicUpdate =
                             post.isInternal || !post.isRepostCountDirty;
 
-                        this.logger.info(
+                        this.logger.debug(
                             `Updating repost count for post ${post.id}`,
                             {
                                 postId: post.id,
@@ -493,7 +502,7 @@ export class KnexPostRepository {
             if (isNewPost) {
                 await this.events.emitAsync(
                     PostCreatedEvent.getName(),
-                    new PostCreatedEvent(post),
+                    new PostCreatedEvent(post.id as number),
                 );
             }
 
@@ -507,29 +516,35 @@ export class KnexPostRepository {
             if (wasUpdated) {
                 await this.events.emitAsync(
                     PostUpdatedEvent.getName(),
-                    new PostUpdatedEvent(post),
+                    new PostUpdatedEvent(post.id as number),
                 );
             }
 
             for (const accountId of likeAccountIds) {
                 await this.events.emitAsync(
                     PostLikedEvent.getName(),
-                    new PostLikedEvent(post, accountId),
+                    new PostLikedEvent(
+                        post.id as number,
+                        post.author.id as number,
+                        accountId,
+                    ),
                 );
             }
 
             for (const accountId of repostAccountIds) {
                 await this.events.emitAsync(
                     PostRepostedEvent.getName(),
-                    new PostRepostedEvent(post, accountId),
+                    new PostRepostedEvent(post.id as number, accountId),
                 );
             }
 
             for (const accountId of repostsToRemove) {
-                await this.events.emitAsync(
-                    PostDerepostedEvent.getName(),
-                    new PostDerepostedEvent(post, accountId),
-                );
+                if (post.id !== null) {
+                    await this.events.emitAsync(
+                        PostDerepostedEvent.getName(),
+                        new PostDerepostedEvent(post.id, accountId),
+                    );
+                }
             }
         } catch (err) {
             await transaction.rollback();
@@ -565,7 +580,7 @@ export class KnexPostRepository {
                 summary: post.summary,
                 content: post.content,
                 url: post.url?.href,
-                image_url: post.imageUrl?.href,
+                image_url: post.imageUrl?.href ?? null,
                 published_at: post.publishedAt,
                 in_reply_to: post.inReplyTo,
                 thread_root: post.threadRoot,
@@ -941,6 +956,9 @@ export class KnexPostRepository {
             apId: new URL(row.author_ap_id),
             apFollowers: parseURL(row.author_ap_followers_url),
             apInbox: parseURL(row.author_ap_inbox_url),
+            apOutbox: parseURL(row.author_ap_outbox_url),
+            apFollowing: parseURL(row.author_ap_following_url),
+            apLiked: parseURL(row.author_ap_liked_url),
             isInternal: row.site_id !== null,
         });
 
@@ -1032,6 +1050,9 @@ export class KnexPostRepository {
                 'accounts.url as author_url',
                 'accounts.ap_followers_url as author_ap_followers_url',
                 'accounts.ap_inbox_url as author_ap_inbox_url',
+                'accounts.ap_outbox_url as author_ap_outbox_url',
+                'accounts.ap_following_url as author_ap_following_url',
+                'accounts.ap_liked_url as author_ap_liked_url',
                 'sites.id as site_id',
                 'sites.host as site_host',
                 'outboxes.outbox_type',

@@ -60,6 +60,7 @@ describe('SiteService', () => {
                         title: 'Default Title',
                         description: 'Default Description',
                         cover_image: 'https://testing.com/cover.png',
+                        site_uuid: 'e604ed82-188c-4f55-a5ce-9ebfb4184970',
                     },
                 };
             },
@@ -83,6 +84,7 @@ describe('SiteService', () => {
         expect(site.host).toBe('hostname.tld');
         expect(site.webhook_secret).toBeDefined();
         expect(site.id).toBeDefined();
+        expect(site.ghost_uuid).toBeDefined();
 
         expect(createInternalAccount.mock.calls).toHaveLength(1);
 
@@ -95,6 +97,7 @@ describe('SiteService', () => {
         expect(siteRow.id).toBe(site.id);
         expect(siteRow.webhook_secret).toBe(site.webhook_secret);
         expect(siteRow.host).toBe(site.host);
+        expect(siteRow.ghost_uuid).toBe(site.ghost_uuid);
 
         const siteTwo = await service.initialiseSiteForHost('hostname.tld');
 
@@ -115,6 +118,7 @@ describe('SiteService', () => {
         expect(site.host).toBe('hostname.tld');
         expect(site.webhook_secret).toBeDefined();
         expect(site.id).toBeDefined();
+        expect(site.ghost_uuid).toBeDefined();
 
         const siteRows = await db('sites').select('*');
 
@@ -126,6 +130,7 @@ describe('SiteService', () => {
         expect(siteRow.webhook_secret).toBe(site.webhook_secret);
         expect(siteRow.host).toBe(site.host);
         expect(siteRow.ghost_pro).toBe(1);
+        expect(siteRow.ghost_uuid).toBe(site.ghost_uuid);
     });
 
     it('Can disable a site', async () => {
@@ -150,5 +155,88 @@ describe('SiteService', () => {
         const siteRows = await db('sites').select('*');
 
         expect(siteRows).toHaveLength(1);
+    });
+
+    it('Throws an error when a site does not have a site_uuid', async () => {
+        ghostService.getSiteSettings = vi.fn().mockResolvedValue({
+            site: {
+                icon: '',
+                title: 'Default Title',
+                description: 'Default Description',
+                cover_image: 'https://testing.com/cover.png',
+            },
+        });
+
+        await expect(
+            service.initialiseSiteForHost('hostname.tld'),
+        ).rejects.toThrow('Site hostname.tld has no site_uuid');
+    });
+
+    it('Creates account with settings when site exists but account does not', async () => {
+        // Manually create site without account
+        await db('sites').insert({
+            host: 'hostname.tld',
+            webhook_secret: 'secret',
+            ghost_uuid: 'some-uuid',
+        });
+
+        const site = await service.initialiseSiteForHost('hostname.tld');
+
+        // Verify account was created with settings from Ghost
+        const account = await db('accounts')
+            .join('users', 'accounts.id', 'users.account_id')
+            .where('users.site_id', site.id)
+            .first();
+
+        expect(account).toBeDefined();
+        expect(account.name).toBe('Default Title');
+    });
+
+    it('Handles duplicate ghost_uuid when a site changes domains', async () => {
+        const ghostUUID = 'some-ghost-uuid';
+
+        ghostService.getSiteSettings = vi.fn().mockResolvedValue({
+            site: {
+                icon: 'https://domain-a.tld/icon.png',
+                title: 'Site A title',
+                description: 'Site A description',
+                cover_image: 'https://domain-a.tld/cover.png',
+                site_uuid: ghostUUID,
+            },
+        });
+
+        const siteA = await service.initialiseSiteForHost('domain-a.tld');
+
+        expect(siteA.host).toBe('domain-a.tld');
+        expect(siteA.ghost_uuid).toBe(ghostUUID);
+
+        ghostService.getSiteSettings = vi.fn().mockResolvedValue({
+            site: {
+                icon: 'https://domain-b.tld/icon.png',
+                title: 'Site B title',
+                description: 'Site B description',
+                cover_image: 'https://domain-b.tld/cover.png',
+                site_uuid: ghostUUID,
+            },
+        });
+
+        const siteB = await service.initialiseSiteForHost('domain-b.tld');
+
+        expect(siteB.host).toBe('domain-b.tld');
+        expect(siteB.ghost_uuid).toBe(ghostUUID);
+
+        // Verify both sites exist
+        const allSites = await db('sites').select('*').orderBy('id', 'asc');
+        expect(allSites).toHaveLength(2);
+
+        // Verify old site has null ghost_uuid
+        const oldSite = allSites.find((s) => s.host === 'domain-a.tld');
+        expect(oldSite).toBeDefined();
+        expect(oldSite?.ghost_uuid).toBeNull();
+
+        // Verify new site has the ghost_uuid
+        const newSite = allSites.find((s) => s.host === 'domain-b.tld');
+        expect(newSite).toBeDefined();
+        expect(newSite?.ghost_uuid).toBe(ghostUUID);
     });
 });

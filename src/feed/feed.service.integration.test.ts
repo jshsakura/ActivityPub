@@ -23,6 +23,7 @@ import { KnexPostRepository } from '@/post/post.repository.knex';
 import { SiteService } from '@/site/site.service';
 import { generateTestCryptoKeyPair } from '@/test/crypto-key-pair';
 import { createTestDb } from '@/test/db';
+import { createFixtureManager, type FixtureManager } from '@/test/fixtures';
 
 describe('FeedService', () => {
     let events: AsyncEvents;
@@ -32,6 +33,7 @@ describe('FeedService', () => {
     let siteService: SiteService;
     let postRepository: KnexPostRepository;
     let moderationService: ModerationService;
+    let fixtureManager: FixtureManager;
     let client: Knex;
 
     beforeAll(async () => {
@@ -52,7 +54,7 @@ describe('FeedService', () => {
     const createExternalAccount = async (host: string) => {
         externalAccountCount++;
 
-        const account = await accountService.createExternalAccount({
+        const createdAccount = await accountService.createExternalAccount({
             username: `external-account-${externalAccountCount}-${host}`,
             name: `External Account ${externalAccountCount} ${host}`,
             bio: `External Account Bio ${externalAccountCount} ${host}`,
@@ -70,6 +72,20 @@ describe('FeedService', () => {
             ap_public_key: '',
         });
 
+        // Fetch the account entity from the repository
+        // `accountService.createExternalAccount()` returns a plain DTO,
+        // but we need the full `Account` entity with methods for use with
+        // `Post.createFromData()`
+        const account = await accountRepository.getByApId(
+            new URL(createdAccount.ap_id),
+        );
+
+        if (!account) {
+            throw new Error(
+                `Account not found with ap_id ${createdAccount.ap_id}`,
+            );
+        }
+
         return account;
     };
 
@@ -81,7 +97,7 @@ describe('FeedService', () => {
             host: 'unknown',
         };
 
-        const post = Post.createFromData(account, {
+        const postData: PostData = {
             type: PostType.Article,
             audience: Audience.Public,
             title: `Post ${postCount}`,
@@ -91,9 +107,13 @@ describe('FeedService', () => {
             imageUrl: null,
             publishedAt: new Date('2025-01-01'),
             ...data,
-        });
+        };
 
-        return post;
+        if (!account.isInternal && !postData.apId) {
+            postData.apId = new URL(`${account.apId}/posts/${postCount}`);
+        }
+
+        return Post.createFromData(account, postData);
     };
 
     const getFeedDataForAccount = async (account: Account) => {
@@ -109,9 +129,14 @@ describe('FeedService', () => {
         // Clean up the database
         await client.raw('SET FOREIGN_KEY_CHECKS = 0');
         await client('feeds').truncate();
+        await client('discovery_feeds').truncate();
+        await client('account_topics').truncate();
+        await client('topics').truncate();
         await client('reposts').truncate();
         await client('posts').truncate();
         await client('follows').truncate();
+        await client('blocks').truncate();
+        await client('domain_blocks').truncate();
         await client('accounts').truncate();
         await client('users').truncate();
         await client('sites').truncate();
@@ -126,6 +151,7 @@ describe('FeedService', () => {
         // Init deps / support
         const logger = {
             info: vi.fn(),
+            debug: vi.fn(),
         } as unknown as Logger;
         events = new AsyncEvents();
         accountRepository = new KnexAccountRepository(client, events);
@@ -145,12 +171,14 @@ describe('FeedService', () => {
                         description: `Site ${host} description`,
                         icon: `https://${host}/favicon.ico`,
                         cover_image: `https://${host}/cover.png`,
+                        site_uuid: crypto.randomUUID(),
                     },
                 };
             },
         });
         postRepository = new KnexPostRepository(client, events, logger);
         moderationService = new ModerationService(client);
+        fixtureManager = createFixtureManager(client);
     });
 
     describe('getFeedData', () => {
@@ -521,6 +549,690 @@ describe('FeedService', () => {
         });
     });
 
+    describe('getDiscoveryFeedData', () => {
+        it('should render articles for discovery feeds, sorted by most recently published', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const viewerAccount = await createInternalAccount(
+                'discovery-viewer.com',
+            );
+
+            const [technology] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            const [business] = await client('topics').insert({
+                name: 'Business',
+                slug: 'business',
+            });
+
+            // Create 2 authors and 2 posts on the Technology topic
+            const technologyPublisher1 =
+                await createInternalAccount('author1.com');
+            const technologyPublisher2 =
+                await createInternalAccount('author2.com');
+
+            await client('account_topics').insert({
+                account_id: technologyPublisher1.id,
+                topic_id: technology,
+            });
+            await client('account_topics').insert({
+                account_id: technologyPublisher2.id,
+                topic_id: technology,
+            });
+
+            const technologyPost1 = await createPost(technologyPublisher1, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-01T10:00:00Z'),
+            });
+            await postRepository.save(technologyPost1);
+
+            const technologyPost2 = await createPost(technologyPublisher2, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-03T10:00:00Z'),
+            });
+            await postRepository.save(technologyPost2);
+
+            // Create 2 authors and 2 posts on the Business topic
+            const businessPublisher1 =
+                await createInternalAccount('author3.com');
+            const businessPublisher2 =
+                await createInternalAccount('author4.com');
+
+            await client('account_topics').insert({
+                account_id: businessPublisher1.id,
+                topic_id: business,
+            });
+            await client('account_topics').insert({
+                account_id: businessPublisher2.id,
+                topic_id: business,
+            });
+            const businessPost1 = await createPost(businessPublisher1, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-02T10:00:00Z'),
+            });
+            await postRepository.save(businessPost1);
+
+            const businessPost2 = await createPost(businessPublisher2, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-04T10:00:00Z'),
+            });
+            await postRepository.save(businessPost2);
+
+            // Add posts to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(
+                technologyPost1 as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                technologyPost2 as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                businessPost1 as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                businessPost2 as PublicPost,
+            );
+
+            // Get discovery feed for Technology
+            const technologyFeed = await feedService.getDiscoveryFeedData(
+                technology,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            // Should be sorted by most recent first
+            expect(technologyFeed.results).toHaveLength(2);
+            expect(technologyFeed.results[0].post_id).toBe(technologyPost2.id); // Jan 3
+            expect(technologyFeed.results[1].post_id).toBe(technologyPost1.id); // Jan 1
+
+            // Get discovery feed for Business
+            const businessFeed = await feedService.getDiscoveryFeedData(
+                business,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            // Should be sorted by most recent first
+            expect(businessFeed.results).toHaveLength(2);
+            expect(businessFeed.results[0].post_id).toBe(businessPost2.id); // Jan 4
+            expect(businessFeed.results[1].post_id).toBe(businessPost1.id); // Jan 2
+        });
+
+        it('should sanitize posts before rendering in discovery feeds', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const viewerAccount = await createInternalAccount(
+                'sanitize-viewer.com',
+            );
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            const author = await createInternalAccount('author.com');
+            await client('account_topics').insert({
+                account_id: author.id,
+                topic_id: topicId,
+            });
+
+            const post = await createPost(author, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(post);
+
+            // Update post content with XSS attempt
+            await client('posts')
+                .update({
+                    content: 'Hello world!<script>alert("xss")</script>',
+                })
+                .where({ id: post.id });
+
+            await feedService.addPostToDiscoveryFeeds(post as PublicPost);
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            // Content should be sanitized
+            expect(feed.results).toHaveLength(1);
+            expect(feed.results[0].post_content).toBe(
+                'Hello world!<script></script>',
+            );
+        });
+
+        it('should correctly set post_liked_by_user flag', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const viewerAccount =
+                await createInternalAccount('likes-viewer.com');
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            const author1 = await createInternalAccount('likes-author1.com');
+            const author2 = await createInternalAccount('likes-author2.com');
+
+            await client('account_topics').insert([
+                { account_id: author1.id, topic_id: topicId },
+                { account_id: author2.id, topic_id: topicId },
+            ]);
+
+            const likedPost = await createPost(author1, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(likedPost);
+
+            const unlikedPost = await createPost(author2, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(unlikedPost);
+
+            // Viewer likes the first post
+            await client('likes').insert({
+                account_id: viewerAccount.id,
+                post_id: likedPost.id,
+            });
+
+            await feedService.addPostToDiscoveryFeeds(likedPost as PublicPost);
+            await feedService.addPostToDiscoveryFeeds(
+                unlikedPost as PublicPost,
+            );
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            expect(feed.results).toHaveLength(2);
+
+            // Find liked post
+            const likedResult = feed.results.find(
+                (r) => r.post_id === likedPost.id,
+            );
+            expect(likedResult).toBeDefined();
+            expect(likedResult!.post_liked_by_user).toBe(1);
+
+            // Find unliked post
+            const unlikedResult = feed.results.find(
+                (r) => r.post_id === unlikedPost.id,
+            );
+            expect(unlikedResult).toBeDefined();
+            expect(unlikedResult!.post_liked_by_user).toBe(0);
+        });
+
+        it('should correctly set post_reposted_by_user flag', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const viewerAccount =
+                await createInternalAccount('reposts-viewer.com');
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            const author1 = await createInternalAccount('reposts-author1.com');
+            const author2 = await createInternalAccount('reposts-author2.com');
+
+            await client('account_topics').insert([
+                { account_id: author1.id, topic_id: topicId },
+                { account_id: author2.id, topic_id: topicId },
+            ]);
+
+            const repostedPost = await createPost(author1, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(repostedPost);
+
+            const notRepostedPost = await createPost(author2, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(notRepostedPost);
+
+            // Viewer reposts the first post
+            await client('reposts').insert({
+                account_id: viewerAccount.id,
+                post_id: repostedPost.id,
+            });
+
+            await feedService.addPostToDiscoveryFeeds(
+                repostedPost as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                notRepostedPost as PublicPost,
+            );
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            expect(feed.results).toHaveLength(2);
+
+            // Find reposted post
+            const repostedResult = feed.results.find(
+                (r) => r.post_id === repostedPost.id,
+            );
+            expect(repostedResult).toBeDefined();
+            expect(repostedResult!.post_reposted_by_user).toBe(1);
+
+            // Find not reposted post
+            const notRepostedResult = feed.results.find(
+                (r) => r.post_id === notRepostedPost.id,
+            );
+            expect(notRepostedResult).toBeDefined();
+            expect(notRepostedResult!.post_reposted_by_user).toBe(0);
+        });
+
+        it('should correctly set author_followed_by_user flag', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const viewerAccount =
+                await createInternalAccount('follows-viewer.com');
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            const followedAuthor = await createInternalAccount(
+                'followed-author.com',
+            );
+            const unfollowedAuthor = await createInternalAccount(
+                'unfollowed-author.com',
+            );
+
+            await client('account_topics').insert([
+                { account_id: followedAuthor.id, topic_id: topicId },
+                { account_id: unfollowedAuthor.id, topic_id: topicId },
+            ]);
+
+            // Viewer follows the first author
+            await accountService.recordAccountFollow(
+                followedAuthor as unknown as AccountType,
+                viewerAccount as unknown as AccountType,
+            );
+
+            const followedAuthorPost = await createPost(followedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(followedAuthorPost);
+
+            const unfollowedAuthorPost = await createPost(unfollowedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(unfollowedAuthorPost);
+
+            // Add posts to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(
+                followedAuthorPost as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                unfollowedAuthorPost as PublicPost,
+            );
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            expect(feed.results).toHaveLength(2);
+
+            // Find post from followed author
+            const followedResult = feed.results.find(
+                (r) => r.post_id === followedAuthorPost.id,
+            );
+            expect(followedResult).toBeDefined();
+            expect(followedResult!.author_id).toBe(followedAuthor.id);
+            expect(followedResult!.author_followed_by_user).toBe(1);
+
+            // Find post from unfollowed author
+            const unfollowedResult = feed.results.find(
+                (r) => r.post_id === unfollowedAuthorPost.id,
+            );
+            expect(unfollowedResult).toBeDefined();
+            expect(unfollowedResult!.author_id).toBe(unfollowedAuthor.id);
+            expect(unfollowedResult!.author_followed_by_user).toBe(0);
+        });
+
+        it('should filter out posts from blocked authors', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            // Setup accounts
+            const viewerAccount = await createInternalAccount(
+                'moderation-viewer.com',
+            );
+            const blockedAuthor =
+                await createInternalAccount('blocked-author.com');
+            const allowedAuthor =
+                await createInternalAccount('allowed-author.com');
+
+            // Setup topics
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert([
+                { account_id: blockedAuthor.id, topic_id: topicId },
+                { account_id: allowedAuthor.id, topic_id: topicId },
+            ]);
+
+            // Setup posts
+            const blockedPost = await createPost(blockedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(blockedPost);
+
+            const allowedPost = await createPost(allowedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(allowedPost);
+
+            await feedService.addPostToDiscoveryFeeds(
+                blockedPost as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                allowedPost as PublicPost,
+            );
+
+            // Block the author
+            await fixtureManager.createBlock(viewerAccount, blockedAuthor);
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            // Should only see the allowed author's post
+            expect(feed.results).toHaveLength(1);
+            expect(feed.results[0].post_id).toBe(allowedPost.id);
+            expect(feed.results[0].author_id).toBe(allowedAuthor.id);
+        });
+
+        it('should filter out posts from domain-blocked authors', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            // Setup accounts
+            const viewerAccount = await createInternalAccount(
+                'domain-moderation-viewer.com',
+            );
+            const blockedDomainAuthor1 =
+                await createExternalAccount('blocked-domain.com');
+            const blockedDomainAuthor2 =
+                await createExternalAccount('blocked-domain.com');
+            const allowedAuthor = await createInternalAccount(
+                'allowed-domain-author.com',
+            );
+
+            // Setup topics
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert([
+                { account_id: blockedDomainAuthor1.id, topic_id: topicId },
+                { account_id: blockedDomainAuthor2.id, topic_id: topicId },
+                { account_id: allowedAuthor.id, topic_id: topicId },
+            ]);
+
+            // Setup posts
+            const blockedPost1 = await createPost(blockedDomainAuthor1, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(blockedPost1);
+
+            const blockedPost2 = await createPost(blockedDomainAuthor2, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(blockedPost2);
+
+            const allowedPost = await createPost(allowedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(allowedPost);
+
+            await feedService.addPostToDiscoveryFeeds(
+                blockedPost1 as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                blockedPost2 as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                allowedPost as PublicPost,
+            );
+
+            // Block the domain
+            await fixtureManager.createDomainBlock(
+                viewerAccount,
+                new URL('https://blocked-domain.com'),
+            );
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            // Should only see the allowed author's post
+            expect(feed.results).toHaveLength(1);
+            expect(feed.results[0].post_id).toBe(allowedPost.id);
+            expect(feed.results[0].author_id).toBe(allowedAuthor.id);
+        });
+
+        it('should handle both account and domain blocks together', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            // Setup accounts
+            const viewerAccount = await createInternalAccount(
+                'combined-moderation-viewer.com',
+            );
+            const accountBlockedAuthor = await createInternalAccount(
+                'account-blocked.com',
+            );
+            const domainBlockedAuthor = await createExternalAccount(
+                'domain-blocked-site.net',
+            );
+            const allowedAuthor = await createInternalAccount(
+                'allowed-combined.com',
+            );
+
+            // Setup topics
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert([
+                { account_id: accountBlockedAuthor.id, topic_id: topicId },
+                { account_id: domainBlockedAuthor.id, topic_id: topicId },
+                { account_id: allowedAuthor.id, topic_id: topicId },
+            ]);
+
+            // Setup posts
+            const accountBlockedPost = await createPost(accountBlockedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-01T10:00:00Z'),
+            });
+            await postRepository.save(accountBlockedPost);
+
+            const domainBlockedPost = await createPost(domainBlockedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-02T10:00:00Z'),
+            });
+            await postRepository.save(domainBlockedPost);
+
+            const allowedPost = await createPost(allowedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-03T10:00:00Z'),
+            });
+            await postRepository.save(allowedPost);
+
+            await feedService.addPostToDiscoveryFeeds(
+                accountBlockedPost as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                domainBlockedPost as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                allowedPost as PublicPost,
+            );
+
+            // Block the account
+            await fixtureManager.createBlock(
+                viewerAccount,
+                accountBlockedAuthor,
+            );
+
+            // Block the domain
+            await fixtureManager.createDomainBlock(
+                viewerAccount,
+                new URL('https://domain-blocked-site.net'),
+            );
+
+            const feed = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                10,
+                null,
+            );
+
+            // Should only see the allowed author's post
+            expect(feed.results).toHaveLength(1);
+            expect(feed.results[0].post_id).toBe(allowedPost.id);
+            expect(feed.results[0].author_id).toBe(allowedAuthor.id);
+        });
+
+        it('should correctly paginate with moderation filters', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            // Setup accounts
+            const viewerAccount = await createInternalAccount(
+                'pagination-moderation-viewer.com',
+            );
+            const blockedAuthor = await createInternalAccount(
+                'pagination-blocked.com',
+            );
+            const allowedAuthor1 = await createInternalAccount(
+                'pagination-allowed1.com',
+            );
+            const allowedAuthor2 = await createInternalAccount(
+                'pagination-allowed2.com',
+            );
+
+            // Setup topics
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert([
+                { account_id: blockedAuthor.id, topic_id: topicId },
+                { account_id: allowedAuthor1.id, topic_id: topicId },
+                { account_id: allowedAuthor2.id, topic_id: topicId },
+            ]);
+
+            // Setup posts
+            const allowedPost1 = await createPost(allowedAuthor1, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-03T10:00:00Z'),
+            });
+            await postRepository.save(allowedPost1);
+
+            const blockedPost = await createPost(blockedAuthor, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-02T10:00:00Z'),
+            });
+            await postRepository.save(blockedPost);
+
+            const allowedPost2 = await createPost(allowedAuthor2, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: new Date('2024-01-01T10:00:00Z'),
+            });
+            await postRepository.save(allowedPost2);
+
+            await feedService.addPostToDiscoveryFeeds(
+                allowedPost1 as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                blockedPost as PublicPost,
+            );
+            await feedService.addPostToDiscoveryFeeds(
+                allowedPost2 as PublicPost,
+            );
+
+            // Block the author
+            await fixtureManager.createBlock(viewerAccount, blockedAuthor);
+
+            // Get first page with limit of 1
+            const page1 = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                1,
+                null,
+            );
+
+            // Should get the most recent allowed post
+            expect(page1.results).toHaveLength(1);
+            expect(page1.results[0].post_id).toBe(allowedPost1.id);
+            expect(page1.nextCursor).not.toBeNull();
+
+            // Get second page using cursor
+            const page2 = await feedService.getDiscoveryFeedData(
+                topicId,
+                viewerAccount.id,
+                1,
+                page1.nextCursor,
+            );
+
+            // Should get the second allowed post (blocked post is skipped)
+            expect(page2.results).toHaveLength(1);
+            expect(page2.results[0].post_id).toBe(allowedPost2.id);
+            expect(page2.nextCursor).toBeNull();
+        });
+    });
+
     describe('addPostToFeeds', () => {
         it('should add a post to the feeds of the users that should see it', async () => {
             const feedService = new FeedService(client, moderationService);
@@ -848,6 +1560,188 @@ describe('FeedService', () => {
         });
     });
 
+    describe('addPostToDiscoveryFeeds', () => {
+        it('should add articles to discovery feeds', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const authorAccount = await createInternalAccount(
+                'discovery-author.com',
+            );
+
+            // Create 3 topics
+            const [technologyTopicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            const [programmingTopicId] = await client('topics').insert({
+                name: 'Programming',
+                slug: 'programming',
+            });
+
+            await client('topics').insert({
+                name: 'Business',
+                slug: 'business',
+            });
+
+            // Associate author with first 2 topics: Technology and Programming
+            await client('account_topics').insert([
+                { account_id: authorAccount.id, topic_id: technologyTopicId },
+                { account_id: authorAccount.id, topic_id: programmingTopicId },
+            ]);
+
+            // Create an article
+            const article = await createPost(authorAccount, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(article);
+
+            // Add article to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(article as PublicPost);
+
+            // Article should be on Technology and Programming topics, but not on Business
+            const discoveryFeeds = await client('discovery_feeds')
+                .where('post_id', article.id)
+                .orderBy('topic_id');
+
+            expect(discoveryFeeds).toHaveLength(2); // Not 3
+            expect(discoveryFeeds[0]).toMatchObject({
+                post_id: article.id,
+                topic_id: technologyTopicId,
+                author_id: authorAccount.id,
+                post_type: PostType.Article,
+            });
+            expect(discoveryFeeds[1]).toMatchObject({
+                post_id: article.id,
+                topic_id: programmingTopicId,
+                author_id: authorAccount.id,
+                post_type: PostType.Article,
+            });
+        });
+
+        it('should NOT add notes to discovery feeds', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const authorAccount = await createInternalAccount(
+                'discovery-note-author.com',
+            );
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert({
+                account_id: authorAccount.id,
+                topic_id: topicId,
+            });
+
+            // Create a note
+            const note = await createPost(authorAccount, {
+                type: PostType.Note,
+                audience: Audience.Public,
+            });
+            await postRepository.save(note);
+
+            // Add note to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(note as PublicPost);
+
+            // Verify no entries were created
+            const discoveryFeeds = await client('discovery_feeds').where(
+                'post_id',
+                note.id,
+            );
+
+            expect(discoveryFeeds).toHaveLength(0);
+        });
+
+        it('should NOT add replies to discovery feeds', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            const authorAccount = await createInternalAccount(
+                'discovery-reply-author.com',
+            );
+            const otherAccount = await createInternalAccount(
+                'discovery-other.com',
+            );
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert({
+                account_id: authorAccount.id,
+                topic_id: topicId,
+            });
+
+            // Parent post
+            const originalPost = await createPost(otherAccount, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(originalPost);
+
+            // Reply post
+            const reply = await createPost(authorAccount, {
+                type: PostType.Note,
+                audience: Audience.Public,
+                inReplyTo: originalPost,
+            });
+            await postRepository.save(reply);
+
+            // Add reply to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(reply as PublicPost);
+
+            // Verify no entries were created
+            const discoveryFeeds = await client('discovery_feeds').where(
+                'post_id',
+                reply.id,
+            );
+
+            expect(discoveryFeeds).toHaveLength(0);
+        });
+
+        it('should use post published_at timestamp for discovery feed entries', async () => {
+            const feedService = new FeedService(client, moderationService);
+            const publishDate = new Date('2024-06-15T10:00:00Z');
+
+            const authorAccount = await createInternalAccount(
+                'discovery-timestamp.com',
+            );
+
+            const [topicId] = await client('topics').insert({
+                name: 'Technology',
+                slug: 'technology',
+            });
+
+            await client('account_topics').insert({
+                account_id: authorAccount.id,
+                topic_id: topicId,
+            });
+
+            // Create an article with specific publish date
+            const article = await createPost(authorAccount, {
+                type: PostType.Article,
+                audience: Audience.Public,
+                publishedAt: publishDate,
+            });
+            await postRepository.save(article);
+
+            // Add to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(article as PublicPost);
+
+            // Verify the published_at timestamp matches
+            const discoveryFeed = await client('discovery_feeds')
+                .where('post_id', article.id)
+                .first();
+
+            expect(discoveryFeed).toBeTruthy();
+            expect(discoveryFeed.published_at).toEqual(publishDate);
+        });
+    });
+
     describe('removePostFromFeeds', () => {
         it('should remove a post from the feeds of the users that can already see it', async () => {
             const feedService = new FeedService(client, moderationService);
@@ -893,9 +1787,7 @@ describe('FeedService', () => {
 
             // Remove followedAccountPost from the feeds of the users that can
             // already see it
-            await feedService.removePostFromFeeds(
-                followedAccountPost as PublicPost,
-            );
+            await feedService.removePostFromFeeds(followedAccountPost.id!);
 
             // Assert feeds for each account are as expected
 
@@ -961,10 +1853,7 @@ describe('FeedService', () => {
             });
 
             // Remove repost from feeds
-            await feedService.removePostFromFeeds(
-                post as PublicPost,
-                followedAccount.id,
-            );
+            await feedService.removePostFromFeeds(post.id!, followedAccount.id);
 
             // Verify repost was removed
             const feedAfterRemoval = await getFeedDataForAccount(userAccount);
@@ -1016,10 +1905,7 @@ describe('FeedService', () => {
             expect(true).toBe(true);
 
             // Remove only reposter1's repost
-            await feedService.removePostFromFeeds(
-                post as PublicPost,
-                reposter1.id,
-            );
+            await feedService.removePostFromFeeds(post.id!, reposter1.id);
 
             // Verify only reposter2's repost remains
             const feedAfterRemoval = await getFeedDataForAccount(userAccount);
@@ -1031,6 +1917,83 @@ describe('FeedService', () => {
                 author_id: postAuthorAccount.id,
                 reposted_by_id: reposter2.id,
             });
+        });
+    });
+
+    describe('removePostFromDiscoveryFeeds', () => {
+        it('should remove a post from discovery feeds', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            // Create an internal account
+            const account = await createInternalAccount('test-discovery.com');
+
+            // Create topics and associate them with the account
+            const topicIds = await Promise.all([
+                client('topics').insert({
+                    name: 'Technology',
+                    slug: 'technology',
+                }),
+                client('topics').insert({ name: 'Science', slug: 'science' }),
+            ]);
+
+            await client('account_topics').insert([
+                { account_id: account.id, topic_id: topicIds[0][0] },
+                { account_id: account.id, topic_id: topicIds[1][0] },
+            ]);
+
+            // Create and save a post
+            const post = await createPost(account, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(post);
+
+            // Add the post to discovery feeds
+            await feedService.addPostToDiscoveryFeeds(post as PublicPost);
+
+            // Verify the post is in discovery feeds for both topics
+            const discoveryFeedsBeforeRemoval = await client('discovery_feeds')
+                .where('post_id', post.id)
+                .select('topic_id');
+
+            expect(discoveryFeedsBeforeRemoval.length).toBe(2);
+            expect(discoveryFeedsBeforeRemoval.map((f) => f.topic_id)).toEqual(
+                expect.arrayContaining([topicIds[0][0], topicIds[1][0]]),
+            );
+
+            // Remove the post from discovery feeds
+            await feedService.removePostFromDiscoveryFeeds(post);
+
+            // Verify the post is no longer in discovery feeds
+            const discoveryFeedsAfterRemoval = await client('discovery_feeds')
+                .where('post_id', post.id)
+                .select('topic_id');
+
+            expect(discoveryFeedsAfterRemoval.length).toBe(0);
+        });
+
+        it('should return empty array when removing a post that is not in any discovery feeds', async () => {
+            const feedService = new FeedService(client, moderationService);
+
+            // Create an internal account without topics
+            const account = await createInternalAccount('test-no-topics.com');
+
+            // Create and save a post
+            const post = await createPost(account, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+            await postRepository.save(post);
+
+            // Remove the post from discovery feeds (should not error)
+            await feedService.removePostFromDiscoveryFeeds(post);
+
+            // Verify the post is not in any discovery feeds
+            const discoveryFeeds = await client('discovery_feeds')
+                .where('post_id', post.id)
+                .select('topic_id');
+
+            expect(discoveryFeeds.length).toBe(0);
         });
     });
 

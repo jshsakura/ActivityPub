@@ -71,24 +71,30 @@ describe('KnexPostRepository', () => {
             generateTestCryptoKeyPair,
         );
         siteService = new SiteService(client, accountService, {
-            async getSiteSettings(_host: string) {
+            async getSiteSettings(host: string) {
                 return {
                     site: {
-                        title: 'Test Site',
-                        description: 'A fake site used for testing',
-                        icon: 'https://testing.com/favicon.ico',
-                        cover_image: 'https://testing.com/cover.png',
+                        title: `Site ${host} title`,
+                        description: `Site ${host} description`,
+                        icon: `https://${host}/favicon.ico`,
+                        cover_image: `https://${host}/cover.png`,
+                        site_uuid: crypto.randomUUID(),
                     },
                 };
             },
         });
         const logger = {
             info: vi.fn(),
+            debug: vi.fn(),
         } as unknown as Logger;
         postRepository = new KnexPostRepository(client, events, logger);
         const moderationService = new ModerationService(client);
         const feedService = new FeedService(client, moderationService);
-        const feedUpdateService = new FeedUpdateService(events, feedService);
+        const feedUpdateService = new FeedUpdateService(
+            events,
+            feedService,
+            postRepository,
+        );
         feedUpdateService.init();
     });
 
@@ -576,7 +582,7 @@ describe('KnexPostRepository', () => {
 
         expect(eventsEmitSpy).toHaveBeenCalledWith(
             PostCreatedEvent.getName(),
-            new PostCreatedEvent(post),
+            new PostCreatedEvent(post.id as number),
         );
     });
 
@@ -812,17 +818,29 @@ describe('KnexPostRepository', () => {
         expect(eventsEmitSpy).nthCalledWith(
             2,
             PostLikedEvent.getName(),
-            new PostLikedEvent(post, Number(accounts[0].id)),
+            new PostLikedEvent(
+                Number(post.id),
+                Number(post.author.id),
+                Number(accounts[0].id),
+            ),
         );
         expect(eventsEmitSpy).nthCalledWith(
             3,
             PostLikedEvent.getName(),
-            new PostLikedEvent(post, Number(accounts[1].id)),
+            new PostLikedEvent(
+                Number(post.id),
+                Number(post.author.id),
+                Number(accounts[1].id),
+            ),
         );
         expect(eventsEmitSpy).nthCalledWith(
             4,
             PostLikedEvent.getName(),
-            new PostLikedEvent(post, Number(accounts[2].id)),
+            new PostLikedEvent(
+                Number(post.id),
+                Number(post.author.id),
+                Number(accounts[2].id),
+            ),
         );
     });
 
@@ -879,17 +897,29 @@ describe('KnexPostRepository', () => {
         expect(eventsEmitSpy).nthCalledWith(
             2,
             PostLikedEvent.getName(),
-            new PostLikedEvent(post, Number(accounts[1].id)),
+            new PostLikedEvent(
+                Number(post.id),
+                Number(post.author.id),
+                Number(accounts[1].id),
+            ),
         );
         expect(eventsEmitSpy).nthCalledWith(
             3,
             PostLikedEvent.getName(),
-            new PostLikedEvent(post, Number(accounts[0].id)),
+            new PostLikedEvent(
+                Number(post.id),
+                Number(post.author.id),
+                Number(accounts[0].id),
+            ),
         );
         expect(eventsEmitSpy).nthCalledWith(
             4,
             PostLikedEvent.getName(),
-            new PostLikedEvent(post, Number(accounts[2].id)),
+            new PostLikedEvent(
+                Number(post.id),
+                Number(post.author.id),
+                Number(accounts[2].id),
+            ),
         );
     });
 
@@ -949,12 +979,12 @@ describe('KnexPostRepository', () => {
         expect(eventsEmitSpy).nthCalledWith(
             2,
             PostRepostedEvent.getName(),
-            new PostRepostedEvent(post, Number(accounts[1].id)),
+            new PostRepostedEvent(Number(post.id), Number(accounts[1].id)),
         );
         expect(eventsEmitSpy).nthCalledWith(
             3,
             PostRepostedEvent.getName(),
-            new PostRepostedEvent(post, Number(accounts[2].id)),
+            new PostRepostedEvent(Number(post.id), Number(accounts[2].id)),
         );
     });
 
@@ -1011,22 +1041,22 @@ describe('KnexPostRepository', () => {
         expect(eventsEmitSpy).nthCalledWith(
             2,
             PostRepostedEvent.getName(),
-            new PostRepostedEvent(post, Number(accounts[1].id)),
+            new PostRepostedEvent(Number(post.id), Number(accounts[1].id)),
         );
         expect(eventsEmitSpy).nthCalledWith(
             3,
             PostRepostedEvent.getName(),
-            new PostRepostedEvent(post, Number(accounts[0].id)),
+            new PostRepostedEvent(Number(post.id), Number(accounts[0].id)),
         );
         expect(eventsEmitSpy).nthCalledWith(
             4,
             PostRepostedEvent.getName(),
-            new PostRepostedEvent(post, Number(accounts[2].id)),
+            new PostRepostedEvent(Number(post.id), Number(accounts[2].id)),
         );
         expect(eventsEmitSpy).nthCalledWith(
             5,
             PostDerepostedEvent.getName(),
-            new PostDerepostedEvent(post, Number(accounts[1].id)),
+            new PostDerepostedEvent(Number(post.id), Number(accounts[1].id)),
         );
     });
 
@@ -1412,7 +1442,7 @@ describe('KnexPostRepository', () => {
         expect(eventsEmitSpy).nthCalledWith(
             1,
             PostCreatedEvent.getName(),
-            new PostCreatedEvent(post),
+            new PostCreatedEvent(post.id as number),
         );
     });
 
@@ -2064,14 +2094,14 @@ describe('KnexPostRepository', () => {
             expect(eventsEmitSpy).toHaveBeenCalledWith(
                 PostUpdatedEvent.getName(),
                 expect.objectContaining({
-                    getPost: expect.any(Function),
+                    getPostId: expect.any(Function),
                 }),
             );
 
             const emittedEvent = eventsEmitSpy.mock.calls.find(
                 (call) => call[0] === PostUpdatedEvent.getName(),
-            )?.[1];
-            expect(emittedEvent?.getPost()).toEqual(post);
+            )?.[1] as PostUpdatedEvent | undefined;
+            expect(emittedEvent?.getPostId()).toEqual(post.id);
 
             const updatedRowInDb = await client('posts')
                 .where({ uuid: post.uuid })

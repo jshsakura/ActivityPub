@@ -62,12 +62,12 @@ BeforeAll(async function setupWiremock() {
             {
                 status: 200,
                 body: {
-                    settings: {
-                        site: {
-                            title: 'Testing Blog',
-                            icon: 'https://ghost.org/favicon.ico',
-                            description: 'A blog for testing',
-                        },
+                    site: {
+                        title: 'Testing Blog',
+                        description: 'A blog for testing',
+                        icon: 'https://ghost.org/favicon.ico',
+                        cover_image: 'https://ghost.org/cover.png',
+                        site_uuid: "{{randomValue type='UUID'}}",
                     },
                 },
                 headers: {
@@ -94,33 +94,46 @@ async function setupSelfSite() {
         .where('id', '=', json.id);
 }
 
-BeforeAll(async function setupLocalSites() {
-    await Promise.all([
-        fetchActivityPub('https://alice.test/.ghost/activitypub/v1/site'),
-        fetchActivityPub('https://bob.test/.ghost/activitypub/v1/site'),
-        fetchActivityPub('https://carol.test/.ghost/activitypub/v1/site'),
-    ]);
-});
-
 Before(async function reset() {
     await resetWiremock();
     await resetDatabase();
-    await Promise.all([
+    await await Promise.all([
         setupSelfSite(),
         fetchActivityPub('https://alice.test/.ghost/activitypub/v1/site'),
         fetchActivityPub('https://bob.test/.ghost/activitypub/v1/site'),
-        fetchActivityPub('https://carol.test/.ghost/activitypub/v1/site'),
+        fetchActivityPub('https://charlie.test/.ghost/activitypub/v1/site'),
     ]);
 });
 
 Before(async function setupState() {
-    const res = await fetch('https://self.test/.ghost/activitypub/users/index');
-    const actor = await res.json();
+    const [selfActor, aliceActor, bobActor, charlieActor] = await Promise.all([
+        fetch('https://self.test/.ghost/activitypub/users/index').then((r) =>
+            r.json(),
+        ),
+        fetch('https://alice.test/.ghost/activitypub/users/index').then((r) =>
+            r.json(),
+        ),
+        fetch('https://bob.test/.ghost/activitypub/users/index').then((r) =>
+            r.json(),
+        ),
+        fetch('https://charlie.test/.ghost/activitypub/users/index').then((r) =>
+            r.json(),
+        ),
+    ]);
+
+    const aliceWithHandle = { ...aliceActor, handle: '@index@alice.test' };
+    const bobWithHandle = { ...bobActor, handle: '@index@bob.test' };
+    const charlieWithHandle = {
+        ...charlieActor,
+        handle: '@index@charlie.test',
+    };
 
     this.activities = {};
     this.objects = {};
     this.actors = {
-        Us: actor,
+        Us: { ...selfActor, handle: '@index@self.test' },
+        'Alice.Internal': aliceWithHandle,
+        'Bob.Internal': bobWithHandle,
+        'Charlie.Internal': charlieWithHandle,
     };
-    this.actors.Us.handle = '@index@self.test';
 });

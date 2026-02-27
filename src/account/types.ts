@@ -5,6 +5,7 @@ export interface Site {
     id: number;
     host: string;
     webhook_secret: string;
+    ghost_uuid: string | null;
 }
 
 export interface InternalAccountData {

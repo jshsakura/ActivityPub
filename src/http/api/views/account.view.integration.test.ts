@@ -1,11 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Context } from '@fedify/fedify';
 import type { Logger } from '@logtape/logtape';
 import type { Knex } from 'knex';
 
 import type { FedifyContextFactory } from '@/activitypub/fedify-context.factory';
-import type { ContextData } from '@/app';
+import type { FedifyContext } from '@/app';
 import { AsyncEvents } from '@/core/events';
 import { error, ok } from '@/core/result';
 import type { AccountDTO, AccountDTOWithBluesky } from '@/http/api/types';
@@ -33,7 +32,7 @@ describe('AccountView', () => {
                 warn: vi.fn(),
             },
         },
-    } as unknown as Context<ContextData>;
+    } as unknown as FedifyContext;
     let fixtureManager: FixtureManager;
 
     beforeAll(async () => {
@@ -64,19 +63,36 @@ describe('AccountView', () => {
 
     describe('viewById', () => {
         it('should be able to view an internal account by its ID', async () => {
-            const [account] = await fixtureManager.createInternalAccount(
-                null,
-                'eggs.food',
-            );
+            const [account] = await fixtureManager.createInternalAccount();
 
             const view = await accountView.viewById(account.id!);
 
             expect(view).not.toBeNull();
             expect(view!.id).toBe(account.id);
-
-            await expect(view).toMatchFileSnapshot(
-                '../__snapshots__/views/AccountView.viewById.no-context.json',
+            expect(view!.apId).toBe(account.apId.toString());
+            expect(view!.name).toBe(account.name);
+            expect(view!.handle).toBe(
+                `@${account.username}@${account.apId.host}`,
             );
+            expect(view!.avatarUrl).toBe(
+                account.avatarUrl ? account.avatarUrl.toString() : null,
+            );
+            expect(view!.bannerImageUrl).toBe(
+                account.bannerImageUrl
+                    ? account.bannerImageUrl.toString()
+                    : null,
+            );
+            expect(view!.bio).toBe(account.bio);
+            expect(view!.url).toBe(account.url.toString());
+            expect(view!.followerCount).toBe(0);
+            expect(view!.followingCount).toBe(0);
+            expect(view!.postCount).toBe(0);
+            expect(view!.likedCount).toBe(0);
+            expect(view!.followedByMe).toBe(false);
+            expect(view!.followsMe).toBe(false);
+            expect(view!.blockedByMe).toBe(false);
+            expect(view!.domainBlockedByMe).toBe(false);
+            expect(view!.customFields).toEqual(account.customFields || {});
         });
 
         it('should not be able to view an external account by its ID', async () => {
@@ -85,6 +101,33 @@ describe('AccountView', () => {
             const view = await accountView.viewById(account.id!);
 
             expect(view).toBeNull();
+        });
+
+        it('should return zero counts when includeCounts is false', async () => {
+            const [account] = await fixtureManager.createInternalAccount();
+            const [otherAccount] = await fixtureManager.createInternalAccount();
+
+            const post = Post.createFromData(account, {
+                type: PostType.Article,
+                audience: Audience.Public,
+            });
+
+            post.addLike(account); // will cause likeCount to be 1
+
+            await postRepository.save(post); // will cause postCount to be 1
+
+            await fixtureManager.createFollow(otherAccount, account); // will cause followerCount to be 1
+            await fixtureManager.createFollow(account, otherAccount); // will cause followingCount to be 1
+
+            const view = await accountView.viewById(account.id!, {
+                includeCounts: false,
+            });
+
+            expect(view).not.toBeNull();
+            expect(view!.postCount).toBe(0);
+            expect(view!.followerCount).toBe(0);
+            expect(view!.followingCount).toBe(0);
+            expect(view!.likedCount).toBe(0);
         });
 
         it('should include the number of posts for the account', async () => {
@@ -97,7 +140,9 @@ describe('AccountView', () => {
                 }),
             );
 
-            const view = await accountView.viewById(account.id!);
+            const view = await accountView.viewById(account.id!, {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.postCount).toBe(1);
@@ -113,7 +158,9 @@ describe('AccountView', () => {
             post.addLike(account);
             await postRepository.save(post);
 
-            const view = await accountView.viewById(account.id!);
+            const view = await accountView.viewById(account.id!, {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.likedCount).toBe(1);
@@ -129,7 +176,9 @@ describe('AccountView', () => {
             post.addRepost(account);
             await postRepository.save(post);
 
-            const view = await accountView.viewById(account.id!);
+            const view = await accountView.viewById(account.id!, {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.postCount).toBe(2);
@@ -141,7 +190,9 @@ describe('AccountView', () => {
 
             await fixtureManager.createFollow(site2Account, siteAccount);
 
-            const view = await accountView.viewById(siteAccount.id!);
+            const view = await accountView.viewById(siteAccount.id!, {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.id).toBe(siteAccount.id);
@@ -155,7 +206,9 @@ describe('AccountView', () => {
 
             await fixtureManager.createFollow(siteAccount, site2Account);
 
-            const view = await accountView.viewById(siteAccount.id!);
+            const view = await accountView.viewById(siteAccount.id!, {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.id).toBe(siteAccount.id);
@@ -172,6 +225,7 @@ describe('AccountView', () => {
 
             const view = await accountView.viewById(siteAccount.id!, {
                 requestUserAccount: requestUserAccount!,
+                includeCounts: true,
             });
 
             expect(view).not.toBeNull();
@@ -190,6 +244,7 @@ describe('AccountView', () => {
 
             const view = await accountView.viewById(siteAccount.id!, {
                 requestUserAccount: requestUserAccount!,
+                includeCounts: true,
             });
 
             expect(view).not.toBeNull();
@@ -233,6 +288,7 @@ describe('AccountView', () => {
             expect(view!.blueskyHandle).toBe(
                 `@${siteAccount!.username}@bluesky`,
             );
+            expect(view!.blueskyHandleConfirmed).toBe(true);
         });
 
         it('should not include the Bluesky integration data when the account is not for the request user', async () => {
@@ -251,6 +307,7 @@ describe('AccountView', () => {
 
             expect('blueskyEnabled' in view!).toBe(false);
             expect('blueskyHandle' in view!).toBe(false);
+            expect('blueskyHandleConfirmed' in view!).toBe(false);
         });
     });
 
@@ -315,19 +372,36 @@ describe('AccountView', () => {
 
     describe('viewByApId', () => {
         it('should be able to view an internal account by its AP ID', async () => {
-            const [account] = await fixtureManager.createInternalAccount(
-                null,
-                'billy-elliot.dance',
-            );
+            const [account] = await fixtureManager.createInternalAccount();
 
             const view = await accountView.viewByApId(account.apId.toString());
 
             expect(view).not.toBeNull();
             expect(view!.id).toBe(account.id);
-
-            await expect(view).toMatchFileSnapshot(
-                '../__snapshots__/views/AccountView.viewByApId.internal-no-context.json',
+            expect(view!.apId).toBe(account.apId.toString());
+            expect(view!.name).toBe(account.name);
+            expect(view!.handle).toBe(
+                `@${account.username}@${account.apId.host}`,
             );
+            expect(view!.avatarUrl).toBe(
+                account.avatarUrl ? account.avatarUrl.toString() : null,
+            );
+            expect(view!.bannerImageUrl).toBe(
+                account.bannerImageUrl
+                    ? account.bannerImageUrl.toString()
+                    : null,
+            );
+            expect(view!.bio).toBe(account.bio);
+            expect(view!.url).toBe(account.url.toString());
+            expect(view!.followerCount).toBe(0);
+            expect(view!.followingCount).toBe(0);
+            expect(view!.postCount).toBe(0);
+            expect(view!.likedCount).toBe(0);
+            expect(view!.followedByMe).toBe(false);
+            expect(view!.followsMe).toBe(false);
+            expect(view!.blockedByMe).toBe(false);
+            expect(view!.domainBlockedByMe).toBe(false);
+            expect(view!.customFields).toEqual(account.customFields || {});
         });
 
         it('should include the number of posts for the account', async () => {
@@ -340,7 +414,9 @@ describe('AccountView', () => {
                 }),
             );
 
-            const view = await accountView.viewByApId(account.apId.toString());
+            const view = await accountView.viewByApId(account.apId.toString(), {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.postCount).toBe(1);
@@ -356,7 +432,9 @@ describe('AccountView', () => {
             post.addLike(account);
             await postRepository.save(post);
 
-            const view = await accountView.viewByApId(account.apId.toString());
+            const view = await accountView.viewByApId(account.apId.toString(), {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.likedCount).toBe(1);
@@ -372,7 +450,9 @@ describe('AccountView', () => {
             post.addRepost(account);
             await postRepository.save(post);
 
-            const view = await accountView.viewByApId(account.apId.toString());
+            const view = await accountView.viewByApId(account.apId.toString(), {
+                includeCounts: true,
+            });
 
             expect(view).not.toBeNull();
             expect(view!.postCount).toBe(2);
@@ -386,6 +466,7 @@ describe('AccountView', () => {
 
             const view = await accountView.viewByApId(
                 siteAccount.apId.toString(),
+                { includeCounts: true },
             );
 
             expect(view).not.toBeNull();
@@ -402,6 +483,7 @@ describe('AccountView', () => {
 
             const view = await accountView.viewByApId(
                 siteAccount.apId.toString(),
+                { includeCounts: true },
             );
 
             expect(view).not.toBeNull();
@@ -419,7 +501,10 @@ describe('AccountView', () => {
 
             const view = await accountView.viewByApId(
                 siteAccount.apId.toString(),
-                { requestUserAccount: requestUserAccount! },
+                {
+                    requestUserAccount: requestUserAccount!,
+                    includeCounts: true,
+                },
             );
 
             expect(view).not.toBeNull();
@@ -438,7 +523,10 @@ describe('AccountView', () => {
 
             const view = await accountView.viewByApId(
                 siteAccount.apId.toString(),
-                { requestUserAccount: requestUserAccount! },
+                {
+                    requestUserAccount: requestUserAccount!,
+                    includeCounts: true,
+                },
             );
 
             expect(view).not.toBeNull();

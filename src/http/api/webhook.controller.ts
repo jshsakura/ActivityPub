@@ -9,14 +9,19 @@ import { postToDTO } from '@/http/api/helpers/post';
 import { BadRequest, Forbidden } from '@/http/api/helpers/response';
 
 const PostInputSchema = z.object({
-    uuid: z.string().uuid(),
+    uuid: z.uuid(),
     title: z.string(),
     html: z.string().nullable(),
     excerpt: z.string().nullable(),
     custom_excerpt: z.string().nullable(),
-    feature_image: z.string().url().nullable(),
-    published_at: z.string().datetime(),
-    url: z.string().url(),
+    feature_image: z.url().nullable(),
+    published_at: z.iso
+        .datetime()
+        .refine(
+            (date) => date >= '1970-01-01T00:00:01Z',
+            'published_at must not be before 1970-01-01',
+        ),
+    url: z.url(),
     visibility: z.enum(['public', 'members', 'paid', 'tiers']),
     authors: z
         .array(
@@ -40,7 +45,7 @@ const PostPublishedWebhookSchema = z.object({
 const PostDeletedWebhookSchema = z.object({
     post: z.object({
         previous: z.object({
-            uuid: z.string().uuid(),
+            uuid: z.uuid(),
         }),
     }),
 });
@@ -48,7 +53,7 @@ const PostDeletedWebhookSchema = z.object({
 const PostUnpublishedWebhookSchema = z.object({
     post: z.object({
         current: z.object({
-            uuid: z.string().uuid(),
+            uuid: z.uuid(),
         }),
     }),
 });
@@ -72,9 +77,15 @@ export class WebhookController {
                 (await ctx.req.json()) as unknown,
             ).post.current;
         } catch (err) {
+            this.logger.error(
+                'Failed to parse post.published webhook payload: {error}',
+                { error: err instanceof Error ? err.message : 'Unknown error' },
+            );
+
             if (err instanceof Error) {
                 return BadRequest(`Could not parse payload: ${err.message}`);
             }
+
             return BadRequest('Could not parse payload');
         }
 
@@ -87,6 +98,12 @@ export class WebhookController {
 
         if (isError(postResult)) {
             const error = getError(postResult);
+
+            this.logger.error(
+                'Failed to create post from webhook for uuid: {uuid}, error: {error}',
+                { uuid: data.uuid, error },
+            );
+
             switch (error) {
                 case 'missing-content':
                     return BadRequest(
@@ -126,9 +143,15 @@ export class WebhookController {
                 (await ctx.req.json()) as unknown,
             ).post.current.uuid;
         } catch (err) {
+            this.logger.error(
+                'Failed to parse post.unpublished webhook payload: {error}',
+                { error: err instanceof Error ? err.message : 'Unknown error' },
+            );
+
             if (err instanceof Error) {
                 return BadRequest(`Could not parse payload: ${err.message}`);
             }
+
             return BadRequest('Could not parse payload');
         }
 
@@ -143,9 +166,15 @@ export class WebhookController {
                 (await ctx.req.json()) as unknown,
             ).post.current;
         } catch (err) {
+            this.logger.error(
+                'Failed to parse post.updated webhook payload: {error}',
+                { error: err instanceof Error ? err.message : 'Unknown error' },
+            );
+
             if (err instanceof Error) {
                 return BadRequest(`Could not parse payload: ${err.message}`);
             }
+
             return BadRequest('Could not parse payload');
         }
 
@@ -165,9 +194,15 @@ export class WebhookController {
                 (await ctx.req.json()) as unknown,
             ).post.previous.uuid;
         } catch (err) {
+            this.logger.error(
+                'Failed to parse post.deleted webhook payload: {error}',
+                { error: err instanceof Error ? err.message : 'Unknown error' },
+            );
+
             if (err instanceof Error) {
                 return BadRequest(`Could not parse payload: ${err.message}`);
             }
+
             return BadRequest('Could not parse payload');
         }
 
@@ -182,10 +217,12 @@ export class WebhookController {
 
         if (isError(deleteResult)) {
             const error = getError(deleteResult);
+
             this.logger.error(
                 'Failed to delete post with uuid: {uuid}, error: {error}',
                 { uuid, error: error },
             );
+
             switch (error) {
                 case 'upstream-error':
                 case 'not-a-post':

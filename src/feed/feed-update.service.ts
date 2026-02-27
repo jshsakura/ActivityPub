@@ -7,6 +7,7 @@ import {
 } from '@/account/events';
 import type { FeedService } from '@/feed/feed.service';
 import { isFollowersOnlyPost, isPublicPost } from '@/post/post.entity';
+import type { KnexPostRepository } from '@/post/post.repository.knex';
 import { PostCreatedEvent } from '@/post/post-created.event';
 import { PostDeletedEvent } from '@/post/post-deleted.event';
 import { PostDerepostedEvent } from '@/post/post-dereposted.event';
@@ -16,6 +17,7 @@ export class FeedUpdateService {
     constructor(
         private readonly events: EventEmitter,
         private readonly feedService: FeedService,
+        private readonly postRepository: KnexPostRepository,
     ) {}
 
     init() {
@@ -50,15 +52,25 @@ export class FeedUpdateService {
     }
 
     private async handlePostCreatedEvent(event: PostCreatedEvent) {
-        const post = event.getPost();
+        const post = await this.postRepository.getById(event.getPostId());
+
+        if (!post) {
+            return;
+        }
 
         if (isPublicPost(post) || isFollowersOnlyPost(post)) {
             await this.feedService.addPostToFeeds(post);
+            await this.feedService.addPostToDiscoveryFeeds(post);
         }
     }
 
     private async handlePostRepostedEvent(event: PostRepostedEvent) {
-        const post = event.getPost();
+        const post = await this.postRepository.getById(event.getPostId());
+
+        if (!post) {
+            return; // Post was deleted
+        }
+
         const repostedBy = event.getAccountId();
 
         if (isPublicPost(post) || isFollowersOnlyPost(post)) {
@@ -69,14 +81,17 @@ export class FeedUpdateService {
     private async handlePostDeletedEvent(event: PostDeletedEvent) {
         const post = event.getPost();
 
-        await this.feedService.removePostFromFeeds(post);
+        if (post.id !== null) {
+            await this.feedService.removePostFromFeeds(post.id);
+        }
+        await this.feedService.removePostFromDiscoveryFeeds(post);
     }
 
     private async handlePostDerepostedEvent(event: PostDerepostedEvent) {
-        const post = event.getPost();
-        const derepostedBy = event.getAccountId();
-
-        await this.feedService.removePostFromFeeds(post, derepostedBy);
+        await this.feedService.removePostFromFeeds(
+            event.getPostId(),
+            event.getAccountId(),
+        );
     }
 
     private async handleAccountBlockedEvent(event: AccountBlockedEvent) {

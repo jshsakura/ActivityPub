@@ -3,6 +3,7 @@ import { Given, Then, When } from '@cucumber/cucumber';
 import assert from 'node:assert';
 import { createHmac } from 'node:crypto';
 
+import { waitForAPObjectInFeed, waitForItemInFeed } from '../support/feed.js';
 import { createWebhookPost, getWebhookSecret } from '../support/fixtures.js';
 import { fetchActivityPub } from '../support/request.js';
 
@@ -26,7 +27,7 @@ Given('I have internal account followers', async () => {
             { method: 'POST' },
         ),
         fetchActivityPub(
-            'https://carol.test/.ghost/activitypub/v1/actions/follow/@index@self.test',
+            'https://charlie.test/.ghost/activitypub/v1/actions/follow/@index@self.test',
             { method: 'POST' },
         ),
     ]);
@@ -66,29 +67,25 @@ When('I create a post in ghost', async function () {
 });
 
 Then('the article is in my followers feeds', async function () {
-    const feeds = await Promise.all([
-        fetchActivityPub(
+    const feeds = await Promise.allSettled([
+        waitForItemInFeed(
+            this.article.id,
             'https://alice.test/.ghost/activitypub/v1/feed/reader',
-            { method: 'GET' },
         ),
-        fetchActivityPub('https://bob.test/.ghost/activitypub/v1/feed/reader', {
-            method: 'GET',
-        }),
-        fetchActivityPub(
-            'https://carol.test/.ghost/activitypub/v1/feed/reader',
-            { method: 'GET' },
+        waitForItemInFeed(
+            this.article.id,
+            'https://bob.test/.ghost/activitypub/v1/feed/reader',
+        ),
+        waitForItemInFeed(
+            this.article.id,
+            'https://charlie.test/.ghost/activitypub/v1/feed/reader',
         ),
     ]);
 
-    const articleId = this.article.id;
-
-    for (const feed of feeds) {
-        const json = await feed.json();
-        assert(
-            json.posts.find((post) => post.id === articleId),
-            'Article is not in feed',
-        );
-    }
+    assert(
+        feeds.every((feed) => feed.status === 'fulfilled'),
+        'Article is not in all feeds',
+    );
 });
 
 When('I create a note which mentions alice', async function () {
@@ -110,29 +107,25 @@ When('I create a note which mentions alice', async function () {
 });
 
 Then('the note is in my followers feeds', async function () {
-    const feeds = await Promise.all([
-        fetchActivityPub(
+    const feeds = await Promise.allSettled([
+        waitForAPObjectInFeed(
+            this.note.id,
             'https://alice.test/.ghost/activitypub/v1/feed/notes',
-            { method: 'GET' },
         ),
-        fetchActivityPub('https://bob.test/.ghost/activitypub/v1/feed/notes', {
-            method: 'GET',
-        }),
-        fetchActivityPub(
-            'https://carol.test/.ghost/activitypub/v1/feed/notes',
-            { method: 'GET' },
+        waitForAPObjectInFeed(
+            this.note.id,
+            'https://bob.test/.ghost/activitypub/v1/feed/notes',
+        ),
+        waitForAPObjectInFeed(
+            this.note.id,
+            'https://charlie.test/.ghost/activitypub/v1/feed/notes',
         ),
     ]);
 
-    const noteId = this.note.id;
-
-    for (const feed of feeds) {
-        const json = await feed.json();
-        assert(
-            json.posts.find((post) => post.id === noteId),
-            'Note is not in feed',
-        );
-    }
+    assert(
+        feeds.every((feed) => feed.status === 'fulfilled'),
+        'Note is not in all feeds',
+    );
 });
 
 Then('alice receives a mention notification', async function () {
@@ -191,7 +184,7 @@ Then('the reply is not in my followers feeds', async function () {
             method: 'GET',
         }),
         fetchActivityPub(
-            'https://carol.test/.ghost/activitypub/v1/feed/notes',
+            'https://charlie.test/.ghost/activitypub/v1/feed/notes',
             { method: 'GET' },
         ),
     ]);
@@ -260,7 +253,7 @@ Then('the note is not in my followers feeds', async function () {
             method: 'GET',
         }),
         fetchActivityPub(
-            'https://carol.test/.ghost/activitypub/v1/feed/notes',
+            'https://charlie.test/.ghost/activitypub/v1/feed/notes',
             { method: 'GET' },
         ),
     ]);
@@ -468,7 +461,7 @@ Then('the updated article is in my followers feeds', async function () {
             method: 'GET',
         }),
         fetchActivityPub(
-            'https://carol.test/.ghost/activitypub/v1/feed/reader',
+            'https://charlie.test/.ghost/activitypub/v1/feed/reader',
             { method: 'GET' },
         ),
     ]);

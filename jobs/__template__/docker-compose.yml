@@ -1,0 +1,10 @@
+services:
+  mysql-test:
+    image: mysql:8.4.8@sha256:a2d126916bc2ba79a890a4bf62d305eb8b68fcbdd35c6e582d529df18faf5ebb
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: __JOB_NAME__
+    ports:
+      - "3308:3306"
+    tmpfs:
+      - /var/lib/mysql

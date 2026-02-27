@@ -32,6 +32,9 @@ interface AccountRow {
     ap_id: string;
     ap_followers_url: string | null;
     ap_inbox_url: string | null;
+    ap_outbox_url: string | null;
+    ap_following_url: string | null;
+    ap_liked_url: string | null;
     custom_fields: Record<string, string> | null;
     site_id: number | null;
 }
@@ -99,6 +102,10 @@ export class KnexAccountRepository {
         }
 
         return account;
+    }
+
+    async createFromRow(row: AccountRow): Promise<Account> {
+        return this.mapRowToAccountEntity(row);
     }
 
     async save(account: Account): Promise<void> {
@@ -255,6 +262,9 @@ export class KnexAccountRepository {
                 'accounts.ap_id',
                 'accounts.ap_followers_url',
                 'accounts.ap_inbox_url',
+                'accounts.ap_outbox_url',
+                'accounts.ap_following_url',
+                'accounts.ap_liked_url',
                 'accounts.custom_fields',
             )
             .first();
@@ -282,6 +292,9 @@ export class KnexAccountRepository {
                 'accounts.ap_id',
                 'accounts.ap_followers_url',
                 'accounts.ap_inbox_url',
+                'accounts.ap_outbox_url',
+                'accounts.ap_following_url',
+                'accounts.ap_liked_url',
                 'accounts.custom_fields',
                 'users.site_id',
             )
@@ -311,6 +324,9 @@ export class KnexAccountRepository {
                 'accounts.ap_id',
                 'accounts.ap_followers_url',
                 'accounts.ap_inbox_url',
+                'accounts.ap_outbox_url',
+                'accounts.ap_following_url',
+                'accounts.ap_liked_url',
                 'users.site_id',
             )
             .first();
@@ -341,6 +357,9 @@ export class KnexAccountRepository {
                 'accounts.ap_id',
                 'accounts.ap_followers_url',
                 'accounts.ap_inbox_url',
+                'accounts.ap_outbox_url',
+                'accounts.ap_following_url',
+                'accounts.ap_liked_url',
                 'accounts.custom_fields',
                 'users.site_id',
             )
@@ -351,6 +370,24 @@ export class KnexAccountRepository {
         }
 
         return this.mapRowToAccountEntity(accountRow);
+    }
+
+    async getKeyPair(
+        accountId: number,
+    ): Promise<{ publicKey: string | null; privateKey: string | null } | null> {
+        const row = await this.db('accounts')
+            .select('ap_public_key', 'ap_private_key')
+            .where({ id: accountId })
+            .first();
+
+        if (!row) {
+            return null;
+        }
+
+        return {
+            publicKey: row.ap_public_key,
+            privateKey: row.ap_private_key,
+        };
     }
 
     private async mapRowToAccountEntity(row: AccountRow): Promise<Account> {
@@ -373,6 +410,9 @@ export class KnexAccountRepository {
             apId: new URL(row.ap_id),
             apFollowers: parseURL(row.ap_followers_url),
             apInbox: parseURL(row.ap_inbox_url),
+            apOutbox: parseURL(row.ap_outbox_url),
+            apFollowing: parseURL(row.ap_following_url),
+            apLiked: parseURL(row.ap_liked_url),
             isInternal: row.site_id !== null,
             customFields: row.custom_fields,
         });

@@ -68,6 +68,7 @@ export class AccountController {
 
         const viewContext = {
             requestUserAccount: siteDefaultAccount,
+            includeCounts: true,
         };
 
         if (handle === CURRENT_USER_KEYWORD) {
@@ -124,7 +125,7 @@ export class AccountController {
             accountFollows = await this.accountFollowsView.getFollowsByAccount(
                 siteDefaultAccount,
                 type,
-                Number.parseInt(next || '0'),
+                Number.parseInt(next || '0', 10),
                 siteDefaultAccount,
             );
         } else {
@@ -147,7 +148,7 @@ export class AccountController {
                     await this.accountFollowsView.getFollowsByAccount(
                         account,
                         type,
-                        Number.parseInt(next || '0'),
+                        Number.parseInt(next || '0', 10),
                         siteDefaultAccount,
                     );
             } else {

@@ -19,6 +19,7 @@ import {
     buildUpdateActivityAndObjectFromPost,
 } from '@/helpers/activitypub/activity';
 import { PostType } from '@/post/post.entity';
+import type { KnexPostRepository } from '@/post/post.repository.knex';
 import { PostCreatedEvent } from '@/post/post-created.event';
 import { PostDeletedEvent } from '@/post/post-deleted.event';
 import { PostUpdatedEvent } from '@/post/post-updated.event';
@@ -28,6 +29,7 @@ export class FediverseBridge {
         private readonly events: EventEmitter,
         private readonly fedifyContextFactory: FedifyContextFactory,
         private readonly accountService: AccountService,
+        private readonly postRepository: KnexPostRepository,
     ) {}
 
     async init() {
@@ -87,7 +89,11 @@ export class FediverseBridge {
     }
 
     private async handlePostCreated(event: PostCreatedEvent) {
-        const post = event.getPost();
+        const post = await this.postRepository.getById(event.getPostId());
+        if (!post) {
+            return;
+        }
+
         if (!post.author.isInternal) {
             return;
         }
@@ -138,8 +144,8 @@ export class FediverseBridge {
     }
 
     private async handlePostUpdated(event: PostUpdatedEvent) {
-        const post = event.getPost();
-        if (!post.author.isInternal) {
+        const post = await this.postRepository.getById(event.getPostId());
+        if (!post || !post.author.isInternal) {
             return;
         }
 
@@ -162,8 +168,11 @@ export class FediverseBridge {
     }
 
     private async handleAccountUpdatedEvent(event: AccountUpdatedEvent) {
-        const account = event.getAccount();
-        if (!account.isInternal) {
+        const account = await this.accountService.getAccountById(
+            event.getAccountId(),
+        );
+
+        if (!account || !account.isInternal) {
             return;
         }
 

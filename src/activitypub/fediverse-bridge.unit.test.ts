@@ -6,12 +6,13 @@ import { type Object as FedifyObject, Follow, Reject } from '@fedify/fedify';
 
 import { AccountEntity } from '@/account/account.entity';
 import type { AccountService } from '@/account/account.service';
-import { AccountBlockedEvent } from '@/account/events';
+import { AccountBlockedEvent, AccountUpdatedEvent } from '@/account/events';
 import type { FedifyContextFactory } from '@/activitypub/fedify-context.factory';
 import { FediverseBridge } from '@/activitypub/fediverse-bridge';
 import type { UriBuilder } from '@/activitypub/uri';
 import type { FedifyContext } from '@/app';
 import { Post, PostType } from '@/post/post.entity';
+import type { KnexPostRepository } from '@/post/post.repository.knex';
 import { PostCreatedEvent } from '@/post/post-created.event';
 import { PostDeletedEvent } from '@/post/post-deleted.event';
 import { PostUpdatedEvent } from '@/post/post-updated.event';
@@ -29,6 +30,7 @@ vi.mock('node:crypto', async (importOriginal) => {
 describe('FediverseBridge', () => {
     let events: EventEmitter;
     let accountService: AccountService;
+    let postRepository: KnexPostRepository;
     let context: FedifyContext;
     let fedifyContextFactory: FedifyContextFactory;
     let mockUriBuilder: UriBuilder<FedifyObject>;
@@ -39,6 +41,9 @@ describe('FediverseBridge', () => {
         accountService = {
             getAccountById: vi.fn(),
         } as unknown as AccountService;
+        postRepository = {
+            getById: vi.fn(),
+        } as unknown as KnexPostRepository;
         mockUriBuilder = {
             buildObjectUri: vi.fn().mockImplementation((object, { id }) => {
                 return new URL(
@@ -75,6 +80,7 @@ describe('FediverseBridge', () => {
             events,
             fedifyContextFactory,
             accountService,
+            postRepository,
         );
     });
 
@@ -163,6 +169,7 @@ describe('FediverseBridge', () => {
             events,
             fedifyContextFactory,
             accountService,
+            postRepository,
         );
         await bridge.init();
 
@@ -246,6 +253,7 @@ describe('FediverseBridge', () => {
             events,
             fedifyContextFactory,
             accountService,
+            postRepository,
         );
         await bridge.init();
 
@@ -291,6 +299,7 @@ describe('FediverseBridge', () => {
             events,
             fedifyContextFactory,
             accountService,
+            postRepository,
         );
         await bridge.init();
 
@@ -333,6 +342,7 @@ describe('FediverseBridge', () => {
             events,
             fedifyContextFactory,
             accountService,
+            postRepository,
         );
         await bridge.init();
 
@@ -366,7 +376,7 @@ describe('FediverseBridge', () => {
         author.apFollowers = new URL('https://example.com/user/foo/followers');
 
         const post = Object.create(Post);
-        post.id = 'post-123';
+        post.id = 456;
         post.author = author;
         post.type = PostType.Note;
         post.content = 'Note content';
@@ -375,11 +385,14 @@ describe('FediverseBridge', () => {
         post.uuid = 'cb1e7e92-5560-4ceb-9272-7e9d0e2a7da4';
         post.publishedAt = new Date('2025-01-01T00:00:00Z');
 
-        const event = new PostCreatedEvent(post);
+        vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+        const event = new PostCreatedEvent(post.id as number);
         events.emit(PostCreatedEvent.getName(), event);
 
         await nextTick();
 
+        expect(postRepository.getById).toHaveBeenCalledWith(post.id);
         expect(sendActivity).toHaveBeenCalledOnce();
         expect(context.data.globaldb.set).toHaveBeenCalled();
 
@@ -407,7 +420,7 @@ describe('FediverseBridge', () => {
         mentionedAccount.isInternal = true;
 
         const post = Object.create(Post);
-        post.id = 'post-123';
+        post.id = 789;
         post.author = author;
         post.type = PostType.Note;
         post.content = 'Hello! @test@example.com';
@@ -416,10 +429,14 @@ describe('FediverseBridge', () => {
         post.uuid = 'cb1e7e92-5560-4ceb-9272-7e9d0e2a7da4';
         post.publishedAt = new Date('2025-01-01T00:00:00Z');
 
-        const event = new PostCreatedEvent(post);
+        vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+        const event = new PostCreatedEvent(post.id as number);
         events.emit(PostCreatedEvent.getName(), event);
 
         await nextTick();
+
+        expect(postRepository.getById).toHaveBeenCalledWith(post.id);
 
         const storedActivity = await globalDbSet.mock.calls[0][1];
         await expect(storedActivity).toMatchFileSnapshot(
@@ -441,23 +458,26 @@ describe('FediverseBridge', () => {
         author.apFollowers = new URL('https://example.com/user/foo/followers');
 
         const post = Object.create(Post);
-        post.id = 'post-123';
+        post.id = 456;
         post.author = author;
         post.type = PostType.Article;
         post.title = 'Post title';
         post.content = 'Post content';
         post.excerpt = 'Post excerpt';
-        post.imageUrl = new URL('https://example.com/img/post-123_feature.jpg');
+        post.imageUrl = new URL('https://example.com/img/456_feature.jpg');
         post.publishedAt = new Date('2025-01-12T10:30:00Z');
-        post.url = new URL('https://example.com/post/post-123');
-        post.apId = new URL('https://example.com/article/post-123');
+        post.url = new URL('https://example.com/post/456');
+        post.apId = new URL('https://example.com/article/456');
         post.uuid = 'cb1e7e92-5560-4ceb-9272-7e9d0e2a7da4';
 
-        const event = new PostCreatedEvent(post);
+        vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+        const event = new PostCreatedEvent(post.id as number);
         events.emit(PostCreatedEvent.getName(), event);
 
         await nextTick();
 
+        expect(postRepository.getById).toHaveBeenCalledWith(post.id);
         expect(sendActivity).toHaveBeenCalledOnce();
         expect(context.data.globaldb.set).toHaveBeenCalled();
 
@@ -479,15 +499,36 @@ describe('FediverseBridge', () => {
         author.isInternal = false;
 
         const post = Object.create(Post);
+        post.id = 456;
         post.author = author;
         post.type = PostType.Note;
         post.content = 'Test content';
 
-        const event = new PostCreatedEvent(post);
+        vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+        const event = new PostCreatedEvent(post.id as number);
         events.emit(PostCreatedEvent.getName(), event);
 
         await nextTick();
 
+        expect(postRepository.getById).toHaveBeenCalledWith(post.id);
+        expect(sendActivity).not.toHaveBeenCalled();
+        expect(context.data.globaldb.set).not.toHaveBeenCalled();
+    });
+
+    it('should not create or send activities if post is not found on the PostCreatedEvent', async () => {
+        await bridge.init();
+
+        const sendActivity = vi.spyOn(context, 'sendActivity');
+
+        vi.mocked(postRepository.getById).mockResolvedValue(null);
+
+        const event = new PostCreatedEvent(123);
+        events.emit(PostCreatedEvent.getName(), event);
+
+        await nextTick();
+
+        expect(postRepository.getById).toHaveBeenCalledWith(123);
         expect(sendActivity).not.toHaveBeenCalled();
         expect(context.data.globaldb.set).not.toHaveBeenCalled();
     });
@@ -515,10 +556,13 @@ describe('FediverseBridge', () => {
         post.apId = new URL('https://example.com/article/post-456');
         post.publishedAt = new Date('2025-01-01T00:00:00Z');
 
-        const event = new PostUpdatedEvent(post);
+        vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+        const event = new PostUpdatedEvent(456);
         events.emit(PostUpdatedEvent.getName(), event);
 
         await nextTick();
+        expect(postRepository.getById).toHaveBeenCalledWith(456);
         expect(sendActivity).toHaveBeenCalledOnce();
         expect(context.data.globaldb.set).toHaveBeenCalledTimes(2);
 
@@ -547,10 +591,104 @@ describe('FediverseBridge', () => {
         post.content = 'Updated post content';
         post.apId = new URL('https://external.com/article/post-456');
 
-        const event = new PostUpdatedEvent(post);
+        vi.mocked(postRepository.getById).mockResolvedValue(post);
+
+        const event = new PostUpdatedEvent(456);
         events.emit(PostUpdatedEvent.getName(), event);
 
         await nextTick();
+        expect(postRepository.getById).toHaveBeenCalledWith(456);
+        expect(sendActivity).not.toHaveBeenCalled();
+        expect(context.data.globaldb.set).not.toHaveBeenCalled();
+    });
+
+    it('should not send update activities on the PostUpdatedEvent if post is not found', async () => {
+        await bridge.init();
+
+        const sendActivity = vi.spyOn(context, 'sendActivity');
+
+        vi.mocked(postRepository.getById).mockResolvedValue(null);
+
+        const event = new PostUpdatedEvent(999);
+        events.emit(PostUpdatedEvent.getName(), event);
+
+        await nextTick();
+        expect(postRepository.getById).toHaveBeenCalledWith(999);
+        expect(sendActivity).not.toHaveBeenCalled();
+        expect(context.data.globaldb.set).not.toHaveBeenCalled();
+    });
+
+    it('should send update activity on AccountUpdatedEvent for internal accounts', async () => {
+        const internalAccount = {
+            id: 123,
+            username: 'testuser',
+            apId: new URL('https://example.com/user/123'),
+            apFollowers: new URL('https://example.com/user/123/followers'),
+            isInternal: true,
+        } as AccountEntity;
+
+        vi.mocked(accountService.getAccountById).mockResolvedValue(
+            internalAccount,
+        );
+
+        await bridge.init();
+
+        const sendActivity = vi.spyOn(context, 'sendActivity');
+
+        const event = new AccountUpdatedEvent(internalAccount.id);
+        events.emit(AccountUpdatedEvent.getName(), event);
+
+        await nextTick();
+
+        expect(accountService.getAccountById).toHaveBeenCalledWith(
+            internalAccount.id,
+        );
+        expect(sendActivity).toHaveBeenCalledOnce();
+        expect(context.data.globaldb.set).toHaveBeenCalledOnce();
+    });
+
+    it('should not send update activity on AccountUpdatedEvent for external accounts', async () => {
+        const externalAccount = {
+            id: 456,
+            username: 'external',
+            apId: new URL('https://external.com/user/456'),
+            apFollowers: new URL('https://external.com/user/456/followers'),
+            isInternal: false,
+        } as AccountEntity;
+
+        vi.mocked(accountService.getAccountById).mockResolvedValue(
+            externalAccount,
+        );
+
+        await bridge.init();
+
+        const sendActivity = vi.spyOn(context, 'sendActivity');
+
+        const event = new AccountUpdatedEvent(externalAccount.id);
+        events.emit(AccountUpdatedEvent.getName(), event);
+
+        await nextTick();
+
+        expect(accountService.getAccountById).toHaveBeenCalledWith(
+            externalAccount.id,
+        );
+        expect(sendActivity).not.toHaveBeenCalled();
+        expect(context.data.globaldb.set).not.toHaveBeenCalled();
+    });
+
+    it('should not send update activity on AccountUpdatedEvent if account is not found', async () => {
+        vi.mocked(accountService.getAccountById).mockResolvedValue(null);
+
+        await bridge.init();
+
+        const sendActivity = vi.spyOn(context, 'sendActivity');
+
+        const event = new AccountUpdatedEvent(999);
+        events.emit(AccountUpdatedEvent.getName(), event);
+
+        await nextTick();
+
+        expect(accountService.getAccountById).toHaveBeenCalledWith(999);
         expect(sendActivity).not.toHaveBeenCalled();
         expect(context.data.globaldb.set).not.toHaveBeenCalled();
     });

@@ -1,8 +1,14 @@
+/**
+ * TODO: Break this file into separate class-based handlers/dispatchers
+ * @see ADR-0005: Class-based architecture
+ *
+ * This file violates our architectural patterns and should be refactored.
+ */
+
 import {
     Accept,
     Announce,
     Article,
-    type Context,
     Create,
     Follow,
     Group,
@@ -12,63 +18,81 @@ import {
     Note,
     Person,
     type Protocol,
-    type RequestContext,
     Undo,
     Update,
     verifyObject,
 } from '@fedify/fedify';
 import * as Sentry from '@sentry/node';
 
-import type { KnexAccountRepository } from '@/account/account.repository.knex';
 import type { AccountService } from '@/account/account.service';
 import type { FollowersService } from '@/activitypub/followers.service';
-import type { ContextData } from '@/app';
+import type { FedifyContext, FedifyRequestContext } from '@/app';
+import { ACTIVITYPUB_COLLECTION_PAGE_SIZE } from '@/constants';
 import { exhaustiveCheck, getError, getValue, isError } from '@/core/result';
 import {
     buildAnnounceActivityForPost,
     buildCreateActivityAndObjectFromPost,
 } from '@/helpers/activitypub/activity';
 import { isFollowedByDefaultSiteAccount } from '@/helpers/activitypub/actor';
+import type { HostDataContextLoader } from '@/http/host-data-context-loader';
 import { lookupActor, lookupObject } from '@/lookup-helpers';
 import { OutboxType, type Post } from '@/post/post.entity';
 import type { KnexPostRepository } from '@/post/post.repository.knex';
 import type { PostService } from '@/post/post.service';
-import type { SiteService } from '@/site/site.service';
 
-export const actorDispatcher = (
-    siteService: SiteService,
-    accountService: AccountService,
-) =>
+export const actorDispatcher = (hostDataContextLoader: HostDataContextLoader) =>
     async function actorDispatcher(
-        ctx: RequestContext<ContextData>,
+        ctx: FedifyRequestContext,
         identifier: string,
     ) {
-        const site = await siteService.getSiteByHost(ctx.host);
-        if (site === null) return null;
+        const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
 
-        const account = await accountService.getDefaultAccountForSite(site);
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host: ctx.host,
+                    });
+                    return null;
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host: ctx.host,
+                    });
+                    return null;
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host: ctx.host,
+                    });
+                    return null;
+                default:
+                    exhaustiveCheck(error);
+            }
+        }
+
+        const { account } = getValue(hostData);
 
         const person = new Person({
-            id: new URL(account.ap_id),
+            id: new URL(account.apId),
             name: account.name,
             summary: account.bio,
             preferredUsername: account.username,
-            icon: account.avatar_url
+            icon: account.avatarUrl
                 ? new Image({
-                      url: new URL(account.avatar_url),
+                      url: new URL(account.avatarUrl),
                   })
                 : null,
-            image: account.banner_image_url
+            image: account.bannerImageUrl
                 ? new Image({
-                      url: new URL(account.banner_image_url),
+                      url: new URL(account.bannerImageUrl),
                   })
                 : null,
-            inbox: new URL(account.ap_inbox_url),
-            outbox: new URL(account.ap_outbox_url),
-            following: new URL(account.ap_following_url),
-            followers: new URL(account.ap_followers_url),
-            liked: new URL(account.ap_liked_url),
-            url: new URL(account.url || account.ap_id),
+            inbox: account.apInbox,
+            outbox: account.apOutbox,
+            following: account.apFollowing,
+            followers: account.apFollowers,
+            liked: account.apLiked,
+            url: account.url || account.apId,
             publicKeys: (await ctx.getActorKeyPairs(identifier)).map(
                 (key) => key.cryptographicKey,
             ),
@@ -78,88 +102,150 @@ export const actorDispatcher = (
     };
 
 export const keypairDispatcher = (
-    siteService: SiteService,
     accountService: AccountService,
+    hostDataContextLoader: HostDataContextLoader,
 ) =>
-    async function keypairDispatcher(
-        ctx: Context<ContextData>,
-        identifier: string,
-    ) {
-        const site = await siteService.getSiteByHost(ctx.host);
-        if (site === null) return [];
+    async function keypairDispatcher(ctx: FedifyContext, identifier: string) {
+        const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
 
-        const account = await accountService.getDefaultAccountForSite(site);
-
-        if (!account.ap_public_key) {
-            return [];
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error(
+                        'Site not found for {host} (identifier: {identifier})',
+                        {
+                            host: ctx.host,
+                            identifier,
+                        },
+                    );
+                    return [];
+                case 'account-not-found':
+                    ctx.data.logger.error(
+                        'Account not found for {host} (identifier: {identifier})',
+                        {
+                            host: ctx.host,
+                            identifier,
+                        },
+                    );
+                    return [];
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error(
+                        'Multiple users found for {host} (identifier: {identifier})',
+                        {
+                            host: ctx.host,
+                            identifier,
+                        },
+                    );
+                    return [];
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        if (!account.ap_private_key) {
-            return [];
+        const { account } = getValue(hostData);
+
+        const keyPair = await accountService.getKeyPair(account.id);
+
+        if (isError(keyPair)) {
+            const error = getError(keyPair);
+            switch (error) {
+                case 'account-not-found':
+                    ctx.data.logger.error(
+                        'Account not found for {host} (identifier: {identifier})',
+                        {
+                            host: ctx.host,
+                            identifier,
+                        },
+                    );
+                    return [];
+                case 'key-pair-not-found':
+                    ctx.data.logger.error(
+                        'Key pair not found for {host} (identifier: {identifier})',
+                        {
+                            host: ctx.host,
+                            identifier,
+                        },
+                    );
+                    return [];
+                default:
+                    exhaustiveCheck(error);
+            }
         }
+
+        const { publicKey, privateKey } = getValue(keyPair);
 
         try {
             return [
                 {
                     publicKey: await importJwk(
-                        JSON.parse(account.ap_public_key) as JsonWebKey,
+                        JSON.parse(publicKey) as JsonWebKey,
                         'public',
                     ),
                     privateKey: await importJwk(
-                        JSON.parse(account.ap_private_key) as JsonWebKey,
+                        JSON.parse(privateKey) as JsonWebKey,
                         'private',
                     ),
                 },
             ];
-        } catch (_err) {
-            ctx.data.logger.warn(`Could not parse keypair for ${identifier}`);
+        } catch (error) {
+            ctx.data.logger.error(
+                'Could not parse keypair for {host} (identifier: {identifier}): {error}',
+                {
+                    host: ctx.host,
+                    identifier,
+                    error,
+                },
+            );
             return [];
         }
     };
 
 export function createAcceptHandler(accountService: AccountService) {
-    return async function handleAccept(
-        ctx: Context<ContextData>,
-        accept: Accept,
-    ) {
-        ctx.data.logger.info('Handling Accept');
+    return async function handleAccept(ctx: FedifyContext, accept: Accept) {
+        ctx.data.logger.debug('Handling Accept');
         const parsed = ctx.parseUri(accept.objectId);
-        ctx.data.logger.info('Parsed accept object', { parsed });
+        ctx.data.logger.debug('Parsed accept object', { parsed });
         if (!accept.id) {
-            ctx.data.logger.info('Accept missing id - exit');
+            ctx.data.logger.debug('Accept missing id - exit');
             return;
         }
 
         const sender = await accept.getActor(ctx);
-        ctx.data.logger.info('Accept sender', { sender });
+        ctx.data.logger.debug('Accept sender retrieved');
         if (sender === null || sender.id === null) {
-            ctx.data.logger.info('Sender missing, exit early');
+            ctx.data.logger.debug('Sender missing, exit early');
             return;
         }
 
         const object = await accept.getObject();
         if (object instanceof Follow === false) {
-            ctx.data.logger.info('Accept object is not a Follow, exit early');
+            ctx.data.logger.debug('Accept object is not a Follow, exit early');
             return;
         }
 
         const recipient = await object.getActor();
         if (recipient === null || recipient.id === null) {
-            ctx.data.logger.info('Recipient missing, exit early');
+            ctx.data.logger.debug('Recipient missing, exit early');
             return;
         }
 
-        const senderJson = await sender.toJsonLd();
-        const acceptJson = await accept.toJsonLd();
-        ctx.data.globaldb.set([accept.id.href], acceptJson);
-        ctx.data.globaldb.set([sender.id.href], senderJson);
+        // Parallelize JSON-LD serialization to reduce latency
+        const [senderJson, acceptJson] = await Promise.all([
+            sender.toJsonLd(),
+            accept.toJsonLd(),
+        ]);
+        await Promise.all([
+            ctx.data.globaldb.set([accept.id.href], acceptJson),
+            ctx.data.globaldb.set([sender.id.href], senderJson),
+        ]);
 
         // Record the account of the sender as well as the follow
         const followerAccountResult = await accountService.ensureByApId(
             recipient.id,
         );
         if (isError(followerAccountResult)) {
-            ctx.data.logger.info('Follower account not found, exit early');
+            ctx.data.logger.debug('Follower account not found, exit early');
             return;
         }
         const followerAccount = getValue(followerAccountResult);
@@ -168,7 +254,7 @@ export function createAcceptHandler(accountService: AccountService) {
             sender.id,
         );
         if (isError(ensureAccountToFollowResult)) {
-            ctx.data.logger.info('Account to follow not found, exit early');
+            ctx.data.logger.debug('Account to follow not found, exit early');
             return;
         }
         const accountToFollow = getValue(ensureAccountToFollowResult);
@@ -178,54 +264,79 @@ export function createAcceptHandler(accountService: AccountService) {
 }
 
 export async function handleAnnouncedCreate(
-    ctx: Context<ContextData>,
+    ctx: FedifyContext,
     announce: Announce,
-    siteService: SiteService,
     accountService: AccountService,
     postService: PostService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
-    ctx.data.logger.info('Handling Announced Create');
+    ctx.data.logger.debug('Handling Announced Create');
 
     // Validate announced create activity is from a Group as we only support
     // announcements from Groups - See https://codeberg.org/fediverse/fep/src/branch/main/fep/1b12/fep-1b12.md
     const announcer = await announce.getActor(ctx);
 
     if (!(announcer instanceof Group)) {
-        ctx.data.logger.info('Create is not from a Group, exit early');
+        ctx.data.logger.debug('Create is not from a Group, exit early');
 
         return;
     }
 
-    const site = await siteService.getSiteByHost(ctx.host);
+    const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
 
-    if (!site) {
-        throw new Error(`Site not found for host: ${ctx.host}`);
+    if (isError(hostData)) {
+        const error = getError(hostData);
+        switch (error) {
+            case 'site-not-found':
+                ctx.data.logger.error('Site not found for {host}', {
+                    host: ctx.host,
+                });
+                throw new Error(`Site not found for host: ${ctx.host}`);
+            case 'account-not-found':
+                ctx.data.logger.error('Account not found for {host}', {
+                    host: ctx.host,
+                });
+                throw new Error(`Account not found for host: ${ctx.host}`);
+            case 'multiple-users-for-site':
+                ctx.data.logger.error('Multiple users found for {host}', {
+                    host: ctx.host,
+                });
+                throw new Error(`Multiple users found for host: ${ctx.host}`);
+            default:
+                exhaustiveCheck(error);
+        }
     }
+
+    const { site } = getValue(hostData);
 
     // Validate that the group is followed
     if (
         !(await isFollowedByDefaultSiteAccount(announcer, site, accountService))
     ) {
-        ctx.data.logger.info('Group is not followed, exit early');
+        ctx.data.logger.debug('Group is not followed, exit early');
 
         return;
     }
 
     let create: Create | null = null;
+    let createJson: Awaited<ReturnType<Create['toJsonLd']>> | undefined;
 
     // Verify create activity
     create = (await announce.getObject()) as Create;
 
     if (!create.id) {
-        ctx.data.logger.info('Create missing id, exit early');
+        ctx.data.logger.debug('Create missing id, exit early');
 
         return;
     }
 
     if (create.proofId || create.proofIds.length > 0) {
-        ctx.data.logger.info('Verifying create with proof(s)');
+        ctx.data.logger.debug('Verifying create with proof(s)');
 
-        if ((await verifyObject(Create, await create.toJsonLd())) === null) {
+        // Cache the JSON-LD result to avoid redundant serialization later
+        createJson = await create.toJsonLd();
+
+        if ((await verifyObject(Create, createJson)) === null) {
             ctx.data.logger.info(
                 'Create cannot be verified with provided proof(s), exit early',
             );
@@ -233,12 +344,12 @@ export async function handleAnnouncedCreate(
             return;
         }
     } else {
-        ctx.data.logger.info('Verifying create with network lookup');
+        ctx.data.logger.debug('Verifying create with network lookup');
 
         const lookupResult = await lookupObject(ctx, create.id);
 
         if (lookupResult === null) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 'Create cannot be verified with network lookup due to inability to lookup object, exit early',
             );
 
@@ -249,7 +360,7 @@ export async function handleAnnouncedCreate(
             lookupResult instanceof Create &&
             String(create.id) !== String(lookupResult.id)
         ) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 'Create cannot be verified with network lookup due to local activity + remote activity ID mismatch, exit early',
             );
 
@@ -260,7 +371,7 @@ export async function handleAnnouncedCreate(
             lookupResult instanceof Create &&
             lookupResult.id?.origin !== lookupResult.actorId?.origin
         ) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 'Create cannot be verified with network lookup due to remote activity + actor origin mismatch, exit early',
             );
 
@@ -271,7 +382,7 @@ export async function handleAnnouncedCreate(
             (lookupResult instanceof Note || lookupResult instanceof Article) &&
             create.objectId?.href !== lookupResult.id?.href
         ) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 'Create cannot be verified with network lookup due to lookup returning Object and ID mismatch, exit early',
             );
 
@@ -289,18 +400,21 @@ export async function handleAnnouncedCreate(
         }
 
         if (!create.id) {
-            ctx.data.logger.info('Remote create missing id, exit early');
+            ctx.data.logger.debug('Remote create missing id, exit early');
 
             return;
         }
     }
 
-    // Persist create activity
-    const createJson = await create.toJsonLd();
+    // Persist create activity - use cached JSON-LD if available (from proof verification)
+    // Otherwise serialize now (happens when create was replaced via network lookup)
+    if (!createJson) {
+        createJson = await create.toJsonLd();
+    }
     ctx.data.globaldb.set([create.id.href], createJson);
 
     if (!create.objectId) {
-        ctx.data.logger.info('Create object id missing, exit early');
+        ctx.data.logger.debug('Create object id missing, exit early');
 
         return;
     }
@@ -313,7 +427,7 @@ export async function handleAnnouncedCreate(
 
         switch (error) {
             case 'upstream-error':
-                ctx.data.logger.info(
+                ctx.data.logger.debug(
                     'Upstream error fetching post for create handling',
                     {
                         postId: create.objectId.href,
@@ -321,7 +435,7 @@ export async function handleAnnouncedCreate(
                 );
                 break;
             case 'not-a-post':
-                ctx.data.logger.info(
+                ctx.data.logger.debug(
                     'Resource is not a post in create handling',
                     {
                         postId: create.objectId.href,
@@ -329,7 +443,7 @@ export async function handleAnnouncedCreate(
                 );
                 break;
             case 'missing-author':
-                ctx.data.logger.info(
+                ctx.data.logger.debug(
                     'Post has missing author in create handling',
                     {
                         postId: create.objectId.href,
@@ -345,7 +459,7 @@ export async function handleAnnouncedCreate(
         const post = getValue(postResult);
 
         if (announcer.id === null) {
-            ctx.data.logger.info('Announcer id missing, exit early');
+            ctx.data.logger.debug('Announcer id missing, exit early');
 
             return;
         }
@@ -353,7 +467,7 @@ export async function handleAnnouncedCreate(
         const accountResult = await accountService.ensureByApId(announcer.id);
 
         if (isError(accountResult)) {
-            ctx.data.logger.info('Announcer account not found, exit early');
+            ctx.data.logger.debug('Announcer account not found, exit early');
 
             return;
         }
@@ -371,11 +485,11 @@ export const createUndoHandler = (
     postRepository: KnexPostRepository,
     postService: PostService,
 ) =>
-    async function handleUndo(ctx: Context<ContextData>, undo: Undo) {
-        ctx.data.logger.info('Handling Undo');
+    async function handleUndo(ctx: FedifyContext, undo: Undo) {
+        ctx.data.logger.debug('Handling Undo');
 
         if (!undo.id) {
-            ctx.data.logger.info('Undo missing an id - exiting');
+            ctx.data.logger.debug('Undo missing an id - exiting');
             return;
         }
 
@@ -384,7 +498,7 @@ export const createUndoHandler = (
         if (object instanceof Follow) {
             const follow = object as Follow;
             if (!follow.actorId || !follow.objectId) {
-                ctx.data.logger.info('Undo contains invalid Follow - exiting');
+                ctx.data.logger.debug('Undo contains invalid Follow - exiting');
                 return;
             }
 
@@ -392,14 +506,14 @@ export const createUndoHandler = (
                 follow.actorId.href,
             );
             if (!unfollower) {
-                ctx.data.logger.info('Could not find unfollower');
+                ctx.data.logger.debug('Could not find unfollower');
                 return;
             }
             const unfollowing = await accountService.getAccountByApId(
                 follow.objectId.href,
             );
             if (!unfollowing) {
-                ctx.data.logger.info('Could not find unfollowing');
+                ctx.data.logger.debug('Could not find unfollowing');
                 return;
             }
 
@@ -409,7 +523,7 @@ export const createUndoHandler = (
         } else if (object instanceof Announce) {
             const sender = await object.getActor(ctx);
             if (sender === null || sender.id === null) {
-                ctx.data.logger.info(
+                ctx.data.logger.debug(
                     'Undo announce activity sender missing, exit early',
                 );
                 return;
@@ -417,7 +531,7 @@ export const createUndoHandler = (
             const senderAccount = await accountService.getByApId(sender.id);
 
             if (object.objectId === null) {
-                ctx.data.logger.info(
+                ctx.data.logger.debug(
                     'Undo announce activity object id missing, exit early',
                 );
                 return;
@@ -432,7 +546,7 @@ export const createUndoHandler = (
                     const error = getError(originalPostResult);
                     switch (error) {
                         case 'upstream-error':
-                            ctx.data.logger.info(
+                            ctx.data.logger.debug(
                                 'Upstream error fetching post for undoing announce',
                                 {
                                     postId: object.objectId.href,
@@ -440,7 +554,7 @@ export const createUndoHandler = (
                             );
                             break;
                         case 'not-a-post':
-                            ctx.data.logger.info(
+                            ctx.data.logger.debug(
                                 'Resource is not a post in undoing announce',
                                 {
                                     postId: object.objectId.href,
@@ -448,7 +562,7 @@ export const createUndoHandler = (
                             );
                             break;
                         case 'missing-author':
-                            ctx.data.logger.info(
+                            ctx.data.logger.debug(
                                 'Post has missing author in undoing announce',
                                 {
                                     postId: object.objectId.href,
@@ -470,25 +584,25 @@ export const createUndoHandler = (
     };
 
 export function createAnnounceHandler(
-    siteService: SiteService,
     accountService: AccountService,
     postService: PostService,
     postRepository: KnexPostRepository,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
     return async function handleAnnounce(
-        ctx: Context<ContextData>,
+        ctx: FedifyContext,
         announce: Announce,
     ) {
-        ctx.data.logger.info('Handling Announce');
+        ctx.data.logger.debug('Handling Announce');
 
         if (!announce.id) {
             // Validate announce
-            ctx.data.logger.info('Invalid Announce - no id');
+            ctx.data.logger.debug('Invalid Announce - no id');
             return;
         }
 
         if (!announce.objectId) {
-            ctx.data.logger.info('Invalid Announce - no object id');
+            ctx.data.logger.debug('Invalid Announce - no object id');
             return;
         }
 
@@ -504,9 +618,9 @@ export function createAnnounceHandler(
             return handleAnnouncedCreate(
                 ctx,
                 announce,
-                siteService,
                 accountService,
                 postService,
+                hostDataContextLoader,
             );
         }
 
@@ -514,30 +628,34 @@ export function createAnnounceHandler(
         const sender = await announce.getActor(ctx);
 
         if (sender === null || sender.id === null) {
-            ctx.data.logger.info('Announce sender missing, exit early');
+            ctx.data.logger.debug('Announce sender missing, exit early');
             return;
         }
 
-        // Lookup announced object - If not found in globalDb, perform network lookup
+        // Lookup announced object - If not found in globalDb
         let object = null;
         const existing =
             (await ctx.data.globaldb.get([announce.objectId.href])) ?? null;
 
         if (!existing) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 'Announce object not found in globalDb, performing network lookup',
             );
-            object = await lookupObject(ctx, announce.objectId);
+            // Reuse the already-fetched object from the Create check above
+            // instead of calling lookupObject again
+            object = announced;
         }
 
         if (!existing && !object) {
             // Validate object
-            ctx.data.logger.info('Invalid Announce - could not find object');
+            ctx.data.logger.debug('Invalid Announce - could not find object');
             return;
         }
 
         if (object && !object.id) {
-            ctx.data.logger.info('Invalid Announce - could not find object id');
+            ctx.data.logger.debug(
+                'Invalid Announce - could not find object id',
+            );
             return;
         }
 
@@ -555,7 +673,7 @@ export function createAnnounceHandler(
 
         if (!existing && object && object.id) {
             // Persist object if not already persisted
-            ctx.data.logger.info('Storing object in globalDb');
+            ctx.data.logger.debug('Storing object in globalDb');
 
             const objectJson = await object.toJsonLd();
 
@@ -580,12 +698,6 @@ export function createAnnounceHandler(
 
         ctx.data.globaldb.set([announce.id.href], announceJson);
 
-        const site = await siteService.getSiteByHost(ctx.host);
-
-        if (!site) {
-            throw new Error(`Site not found for host: ${ctx.host}`);
-        }
-
         // This will save the account if it doesn't already exist
         const senderAccount = await accountService.getByApId(sender.id);
 
@@ -597,7 +709,7 @@ export function createAnnounceHandler(
                 const error = getError(postResult);
                 switch (error) {
                     case 'upstream-error':
-                        ctx.data.logger.info(
+                        ctx.data.logger.debug(
                             'Upstream error fetching post for reposting',
                             {
                                 postId: announce.objectId.href,
@@ -605,7 +717,7 @@ export function createAnnounceHandler(
                         );
                         break;
                     case 'not-a-post':
-                        ctx.data.logger.info(
+                        ctx.data.logger.debug(
                             'Resource for reposting is not a post',
                             {
                                 postId: announce.objectId.href,
@@ -613,7 +725,7 @@ export function createAnnounceHandler(
                         );
                         break;
                     case 'missing-author':
-                        ctx.data.logger.info(
+                        ctx.data.logger.debug(
                             'Post for reposting has missing author',
                             {
                                 postId: announce.objectId.href,
@@ -637,22 +749,22 @@ export function createLikeHandler(
     postRepository: KnexPostRepository,
     postService: PostService,
 ) {
-    return async function handleLike(ctx: Context<ContextData>, like: Like) {
-        ctx.data.logger.info('Handling Like');
+    return async function handleLike(ctx: FedifyContext, like: Like) {
+        ctx.data.logger.debug('Handling Like');
 
         // Validate like
         if (!like.id) {
-            ctx.data.logger.info('Invalid Like - no id');
+            ctx.data.logger.debug('Invalid Like - no id');
             return;
         }
 
         if (!like.objectId) {
-            ctx.data.logger.info('Invalid Like - no object id');
+            ctx.data.logger.debug('Invalid Like - no object id');
             return;
         }
 
         if (!like.actorId) {
-            ctx.data.logger.info('Invalid Like - no actor id');
+            ctx.data.logger.debug('Invalid Like - no actor id');
             return;
         }
 
@@ -664,7 +776,7 @@ export function createLikeHandler(
                 const error = getError(postResult);
                 switch (error) {
                     case 'upstream-error':
-                        ctx.data.logger.info(
+                        ctx.data.logger.debug(
                             'Upstream error fetching post for liking',
                             {
                                 postId: like.objectId.href,
@@ -672,7 +784,7 @@ export function createLikeHandler(
                         );
                         break;
                     case 'not-a-post':
-                        ctx.data.logger.info(
+                        ctx.data.logger.debug(
                             'Resource for liking is not a post',
                             {
                                 postId: like.objectId.href,
@@ -680,7 +792,7 @@ export function createLikeHandler(
                         );
                         break;
                     case 'missing-author':
-                        ctx.data.logger.info(
+                        ctx.data.logger.debug(
                             'Post for liking has missing author',
                             {
                                 postId: like.objectId.href,
@@ -702,7 +814,7 @@ export function createLikeHandler(
         const sender = await like.getActor(ctx);
 
         if (sender === null || sender.id === null) {
-            ctx.data.logger.info('Like sender missing, exit early');
+            ctx.data.logger.debug('Like sender missing, exit early');
             return;
         }
 
@@ -712,14 +824,14 @@ export function createLikeHandler(
             (await ctx.data.globaldb.get([like.objectId.href])) ?? null;
 
         if (!existing) {
-            ctx.data.logger.info(
+            ctx.data.logger.debug(
                 'Like object not found in globalDb, performing network lookup',
             );
 
             try {
                 object = await like.getObject();
             } catch (err) {
-                ctx.data.logger.info(
+                ctx.data.logger.debug(
                     'Error performing like object network lookup',
                     {
                         error: err,
@@ -730,12 +842,12 @@ export function createLikeHandler(
 
         // Validate object
         if (!existing && !object) {
-            ctx.data.logger.info('Invalid Like - could not find object');
+            ctx.data.logger.debug('Invalid Like - could not find object');
             return;
         }
 
         if (object && !object.id) {
-            ctx.data.logger.info('Invalid Like - could not find object id');
+            ctx.data.logger.debug('Invalid Like - could not find object id');
             return;
         }
 
@@ -745,7 +857,7 @@ export function createLikeHandler(
 
         // Persist object if not already persisted
         if (!existing && object && object.id) {
-            ctx.data.logger.info('Storing object in globalDb');
+            ctx.data.logger.debug('Storing object in globalDb');
 
             const objectJson = await object.toJsonLd();
 
@@ -754,10 +866,7 @@ export function createLikeHandler(
     };
 }
 
-export async function inboxErrorHandler(
-    ctx: Context<ContextData>,
-    error: unknown,
-) {
+export async function inboxErrorHandler(ctx: FedifyContext, error: unknown) {
     if (process.env.USE_MQ !== 'true') {
         Sentry.captureException(error);
     }
@@ -767,20 +876,41 @@ export async function inboxErrorHandler(
 }
 
 export function createFollowersDispatcher(
-    siteService: SiteService,
-    accountRepository: KnexAccountRepository,
     followersService: FollowersService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
     return async function dispatchFollowers(
-        ctx: Context<ContextData>,
+        ctx: FedifyContext,
         _handle: string,
     ) {
-        const site = await siteService.getSiteByHost(ctx.host);
-        if (!site) {
-            throw new Error(`Site not found for host: ${ctx.host}`);
+        const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
+
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Site not found for host: ${ctx.host}`);
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Account not found for host: ${ctx.host}`);
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(
+                        `Multiple users found for host: ${ctx.host}`,
+                    );
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        const account = await accountRepository.getBySite(site);
+        const { account } = getValue(hostData);
 
         const followers = await followersService.getFollowers(account.id);
 
@@ -791,56 +921,64 @@ export function createFollowersDispatcher(
 }
 
 export function createFollowingDispatcher(
-    siteService: SiteService,
     accountService: AccountService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
     return async function dispatchFollowing(
-        ctx: RequestContext<ContextData>,
+        ctx: FedifyRequestContext,
         _handle: string,
         cursor: string | null,
     ) {
-        ctx.data.logger.info('Following Dispatcher');
+        ctx.data.logger.debug('Following Dispatcher');
 
-        const pageSize = Number.parseInt(
-            process.env.ACTIVITYPUB_COLLECTION_PAGE_SIZE || '',
-        );
-
-        if (Number.isNaN(pageSize)) {
-            throw new Error(`Page size: ${pageSize} is not valid`);
-        }
-
-        const offset = Number.parseInt(cursor ?? '0');
+        const offset = Number.parseInt(cursor ?? '0', 10);
         let nextCursor: string | null = null;
 
         const host = ctx.request.headers.get('host')!;
-        const site = await siteService.getSiteByHost(host);
+        const hostData = await hostDataContextLoader.loadDataForHost(host);
 
-        if (!site) {
-            throw new Error(`Site not found for host: ${host}`);
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host,
+                    });
+                    throw new Error(`Site not found for host: ${host}`);
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host,
+                    });
+                    throw new Error(`Account not found for host: ${host}`);
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host,
+                    });
+                    throw new Error(`Multiple users found for host: ${host}`);
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        // @TODO: Get account by provided handle instead of default account?
-        const siteDefaultAccount =
-            await accountService.getDefaultAccountForSite(site);
+        const { account } = getValue(hostData);
 
-        const results = await accountService.getFollowingAccounts(
-            siteDefaultAccount,
-            {
-                fields: ['ap_id'],
-                limit: pageSize,
-                offset,
-            },
-        );
+        const results = await accountService.getFollowingAccounts(account, {
+            fields: ['ap_id'],
+            limit: ACTIVITYPUB_COLLECTION_PAGE_SIZE,
+            offset,
+        });
         const totalFollowing = await accountService.getFollowingAccountsCount(
-            siteDefaultAccount.id,
+            account.id,
         );
 
         nextCursor =
-            totalFollowing > offset + pageSize
-                ? (offset + pageSize).toString()
+            totalFollowing > offset + ACTIVITYPUB_COLLECTION_PAGE_SIZE
+                ? (offset + ACTIVITYPUB_COLLECTION_PAGE_SIZE).toString()
                 : null;
 
-        ctx.data.logger.info('Following results', { results });
+        ctx.data.logger.debug('Following results retrieved', {
+            count: results.length,
+        });
 
         return {
             items: results.map((result) => new URL(result.ap_id)),
@@ -850,46 +988,84 @@ export function createFollowingDispatcher(
 }
 
 export function createFollowersCounter(
-    siteService: SiteService,
     accountService: AccountService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
     return async function countFollowers(
-        ctx: RequestContext<ContextData>,
+        ctx: FedifyRequestContext,
         _handle: string,
     ) {
-        const site = await siteService.getSiteByHost(ctx.host);
-        if (!site) {
-            throw new Error(`Site not found for host: ${ctx.host}`);
+        const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
+
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Site not found for host: ${ctx.host}`);
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Account not found for host: ${ctx.host}`);
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(
+                        `Multiple users found for host: ${ctx.host}`,
+                    );
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        // @TODO: Get account by provided handle instead of default account?
-        const siteDefaultAccount = await accountService.getAccountForSite(site);
+        const { account } = getValue(hostData);
 
-        return await accountService.getFollowerAccountsCount(
-            siteDefaultAccount.id,
-        );
+        return await accountService.getFollowerAccountsCount(account.id);
     };
 }
 
 export function createFollowingCounter(
-    siteService: SiteService,
     accountService: AccountService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
     return async function countFollowing(
-        ctx: RequestContext<ContextData>,
+        ctx: FedifyRequestContext,
         _handle: string,
     ) {
-        const site = await siteService.getSiteByHost(ctx.host);
-        if (!site) {
-            throw new Error(`Site not found for host: ${ctx.host}`);
+        const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
+
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Site not found for host: ${ctx.host}`);
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Account not found for host: ${ctx.host}`);
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(
+                        `Multiple users found for host: ${ctx.host}`,
+                    );
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        // @TODO: Get account by provided handle instead of default account?
-        const siteDefaultAccount = await accountService.getAccountForSite(site);
+        const { account } = getValue(hostData);
 
-        return await accountService.getFollowingAccountsCount(
-            siteDefaultAccount.id,
-        );
+        return await accountService.getFollowingAccountsCount(account.id);
     };
 }
 
@@ -898,33 +1074,48 @@ export function followingFirstCursor() {
 }
 
 export function createOutboxDispatcher(
-    accountService: AccountService,
     postService: PostService,
-    siteService: SiteService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
     return async function outboxDispatcher(
-        ctx: RequestContext<ContextData>,
+        ctx: FedifyRequestContext,
         _handle: string,
         cursor: string | null,
     ) {
-        ctx.data.logger.info('Outbox Dispatcher');
-
-        const pageSize = Number.parseInt(
-            process.env.ACTIVITYPUB_COLLECTION_PAGE_SIZE || '20',
-        );
+        ctx.data.logger.debug('Outbox Dispatcher');
 
         const host = ctx.request.headers.get('host')!;
-        const site = await siteService.getSiteByHost(host);
-        if (!site) {
-            throw new Error(`Site not found for host: ${host}`);
+        const hostData = await hostDataContextLoader.loadDataForHost(host);
+
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host,
+                    });
+                    throw new Error(`Site not found for host: ${host}`);
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host,
+                    });
+                    throw new Error(`Account not found for host: ${host}`);
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host,
+                    });
+                    throw new Error(`Multiple users found for host: ${host}`);
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        const siteDefaultAccount = await accountService.getAccountForSite(site);
+        const { account } = getValue(hostData);
 
         const outbox = await postService.getOutboxForAccount(
-            siteDefaultAccount.id,
+            account.id,
             cursor,
-            pageSize,
+            ACTIVITYPUB_COLLECTION_PAGE_SIZE,
         );
         const outboxItems = await Promise.all(
             outbox.items.map(async (item: { post: Post; type: OutboxType }) => {
@@ -937,7 +1128,7 @@ export function createOutboxDispatcher(
                     return createActivity;
                 }
                 const announceActivity = await buildAnnounceActivityForPost(
-                    siteDefaultAccount,
+                    account,
                     item.post,
                     ctx,
                 );
@@ -953,19 +1144,40 @@ export function createOutboxDispatcher(
 }
 
 export function createOutboxCounter(
-    siteService: SiteService,
-    accountService: AccountService,
     postService: PostService,
+    hostDataContextLoader: HostDataContextLoader,
 ) {
-    return async function countOutboxItems(ctx: RequestContext<ContextData>) {
-        const site = await siteService.getSiteByHost(ctx.host);
-        if (!site) {
-            throw new Error(`Site not found for host: ${ctx.host}`);
+    return async function countOutboxItems(ctx: FedifyRequestContext) {
+        const hostData = await hostDataContextLoader.loadDataForHost(ctx.host);
+
+        if (isError(hostData)) {
+            const error = getError(hostData);
+            switch (error) {
+                case 'site-not-found':
+                    ctx.data.logger.error('Site not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Site not found for host: ${ctx.host}`);
+                case 'account-not-found':
+                    ctx.data.logger.error('Account not found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(`Account not found for host: ${ctx.host}`);
+                case 'multiple-users-for-site':
+                    ctx.data.logger.error('Multiple users found for {host}', {
+                        host: ctx.host,
+                    });
+                    throw new Error(
+                        `Multiple users found for host: ${ctx.host}`,
+                    );
+                default:
+                    exhaustiveCheck(error);
+            }
         }
 
-        const siteDefaultAccount = await accountService.getAccountForSite(site);
+        const { account } = getValue(hostData);
 
-        return await postService.getOutboxItemCount(siteDefaultAccount.id);
+        return await postService.getOutboxItemCount(account.id);
     };
 }
 
@@ -974,7 +1186,7 @@ export function outboxFirstCursor() {
 }
 
 export async function likedDispatcher(
-    _ctx: RequestContext<ContextData>,
+    _ctx: FedifyRequestContext,
     _handle: string,
     _cursor: string | null,
 ) {
@@ -985,7 +1197,7 @@ export async function likedDispatcher(
 }
 
 export async function likedCounter(
-    _ctx: RequestContext<ContextData>,
+    _ctx: FedifyRequestContext,
     _handle: string,
 ) {
     return 0;
@@ -996,7 +1208,7 @@ export function likedFirstCursor() {
 }
 
 export async function articleDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Article, data);
@@ -1008,7 +1220,7 @@ export async function articleDispatcher(
 }
 
 export async function followDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Follow, data);
@@ -1020,7 +1232,7 @@ export async function followDispatcher(
 }
 
 export async function acceptDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Accept, data);
@@ -1032,7 +1244,7 @@ export async function acceptDispatcher(
 }
 
 export async function createDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Create, data);
@@ -1044,7 +1256,7 @@ export async function createDispatcher(
 }
 
 export async function updateDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Update, data);
@@ -1056,7 +1268,7 @@ export async function updateDispatcher(
 }
 
 export async function noteDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Note, data);
@@ -1068,7 +1280,7 @@ export async function noteDispatcher(
 }
 
 export async function likeDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Like, data);
@@ -1080,7 +1292,7 @@ export async function likeDispatcher(
 }
 
 export async function announceDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Announce, data);
@@ -1092,7 +1304,7 @@ export async function announceDispatcher(
 }
 
 export async function undoDispatcher(
-    ctx: RequestContext<ContextData>,
+    ctx: FedifyRequestContext,
     data: Record<'id', string>,
 ) {
     const id = ctx.getObjectUri(Undo, data);
@@ -1103,7 +1315,7 @@ export async function undoDispatcher(
     return Undo.fromJsonLd(exists);
 }
 
-export async function nodeInfoDispatcher(_ctx: RequestContext<ContextData>) {
+export async function nodeInfoDispatcher(_ctx: FedifyRequestContext) {
     return {
         software: {
             name: 'ghost',

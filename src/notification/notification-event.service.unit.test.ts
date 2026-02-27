@@ -12,6 +12,7 @@ import {
 import type { NotificationService } from '@/notification/notification.service';
 import { NotificationEventService } from '@/notification/notification-event.service';
 import type { Post } from '@/post/post.entity';
+import type { KnexPostRepository } from '@/post/post.repository.knex';
 import { PostCreatedEvent } from '@/post/post-created.event';
 import { PostDeletedEvent } from '@/post/post-deleted.event';
 import { PostLikedEvent } from '@/post/post-liked.event';
@@ -20,6 +21,7 @@ import { PostRepostedEvent } from '@/post/post-reposted.event';
 describe('NotificationEventService', () => {
     let events: EventEmitter;
     let notificationService: NotificationService;
+    let postRepository: KnexPostRepository;
     let notificationEventService: NotificationEventService;
 
     beforeEach(() => {
@@ -36,9 +38,14 @@ describe('NotificationEventService', () => {
             readAllNotifications: vi.fn(),
         } as unknown as NotificationService;
 
+        postRepository = {
+            getById: vi.fn(),
+        } as unknown as KnexPostRepository;
+
         notificationEventService = new NotificationEventService(
             events,
             notificationService,
+            postRepository,
         );
         notificationEventService.init();
     });
@@ -61,64 +68,104 @@ describe('NotificationEventService', () => {
 
     describe('handling a post like', () => {
         it('should create a like notification', () => {
-            const post = {
-                id: 123,
-                author: {
-                    id: 456,
-                },
-            } as Post;
+            const postId = 123;
+            const postAuthorId = 456;
             const accountId = 789;
 
             events.emit(
                 PostLikedEvent.getName(),
-                new PostLikedEvent(post as Post, accountId),
+                new PostLikedEvent(postId, postAuthorId, accountId),
             );
 
             expect(
                 notificationService.createLikeNotification,
-            ).toHaveBeenCalledWith(post, accountId);
+            ).toHaveBeenCalledWith(postId, postAuthorId, accountId);
         });
     });
 
     describe('handling a post repost', () => {
-        it('should create a repost notification', () => {
+        it('should create a repost notification', async () => {
+            const postId = 123;
             const post = {
-                id: 123,
+                id: postId,
                 author: {
                     id: 456,
                 },
             } as Post;
             const accountId = 789;
 
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
+
             events.emit(
                 PostRepostedEvent.getName(),
-                new PostRepostedEvent(post as Post, accountId),
+                new PostRepostedEvent(postId, accountId),
             );
 
+            await new Promise(process.nextTick);
+
+            expect(postRepository.getById).toHaveBeenCalledWith(postId);
             expect(
                 notificationService.createRepostNotification,
             ).toHaveBeenCalledWith(post, accountId);
         });
+
+        it('should not create a repost notification if post was deleted', async () => {
+            const postId = 123;
+            const accountId = 789;
+
+            vi.mocked(postRepository.getById).mockResolvedValue(null);
+
+            events.emit(
+                PostRepostedEvent.getName(),
+                new PostRepostedEvent(postId, accountId),
+            );
+
+            await new Promise(process.nextTick);
+
+            expect(postRepository.getById).toHaveBeenCalledWith(postId);
+            expect(
+                notificationService.createRepostNotification,
+            ).not.toHaveBeenCalled();
+        });
     });
 
     describe('handling a post reply', () => {
-        it('should create a reply notification', () => {
+        it('should create a reply notification', async () => {
             const post = {
                 id: 123,
                 author: {
                     id: 456,
                 },
                 inReplyTo: 789,
-            } as Post;
+                mentions: [],
+            } as unknown as Post;
+
+            vi.mocked(postRepository.getById).mockResolvedValue(post);
 
             events.emit(
                 PostCreatedEvent.getName(),
-                new PostCreatedEvent(post as Post),
+                new PostCreatedEvent(post.id as number),
             );
 
+            await new Promise(process.nextTick);
+
+            expect(postRepository.getById).toHaveBeenCalledWith(post.id);
             expect(
                 notificationService.createReplyNotification,
             ).toHaveBeenCalledWith(post);
+        });
+
+        it('should not create a reply notification if post was deleted', async () => {
+            vi.mocked(postRepository.getById).mockResolvedValue(null);
+
+            events.emit(PostCreatedEvent.getName(), new PostCreatedEvent(123));
+
+            await new Promise(process.nextTick);
+
+            expect(postRepository.getById).toHaveBeenCalledWith(123);
+            expect(
+                notificationService.createReplyNotification,
+            ).not.toHaveBeenCalled();
         });
     });
 
@@ -197,13 +244,20 @@ describe('NotificationEventService', () => {
                 ],
             } as unknown as Post;
 
+            vi.mocked(postRepository.getById).mockResolvedValue(
+                postWithMention,
+            );
+
             events.emit(
                 PostCreatedEvent.getName(),
-                new PostCreatedEvent(postWithMention),
+                new PostCreatedEvent(postWithMention.id as number),
             );
 
             await new Promise(process.nextTick);
 
+            expect(postRepository.getById).toHaveBeenCalledWith(
+                postWithMention.id,
+            );
             expect(
                 notificationService.createMentionNotification,
             ).toHaveBeenCalledWith(

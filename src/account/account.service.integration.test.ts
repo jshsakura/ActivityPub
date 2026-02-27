@@ -115,6 +115,7 @@ describe('AccountService', () => {
         const siteData = {
             host: 'www.example.com',
             webhook_secret: 'secret',
+            ghost_uuid: 'e604ed82-188c-4f55-a5ce-9ebfb4184970',
         };
         const [id] = await db('sites').insert(siteData);
 
@@ -1394,6 +1395,37 @@ describe('AccountService', () => {
                 await service.getActiveDeliveryBackoff(nonExistentInboxUrl);
 
             expect(backoff).toBeNull();
+        });
+    });
+
+    describe('getKeyPair', () => {
+        it('returns keypair with both keys for an internal account', async () => {
+            const [account] = await fixtureManager.createInternalAccount();
+
+            const result = await service.getKeyPair(account.id);
+
+            expect(result).toStrictEqual([
+                null,
+                {
+                    publicKey: expect.any(String),
+                    privateKey: expect.any(String),
+                },
+            ]);
+        });
+
+        it('returns key-pair-not-found error for an external account', async () => {
+            // An external account does not have a private key
+            const account = await fixtureManager.createExternalAccount();
+
+            const result = await service.getKeyPair(account.id);
+
+            expect(result).toStrictEqual(['key-pair-not-found', null]);
+        });
+
+        it('returns account-not-found error when account does not exist', async () => {
+            const result = await service.getKeyPair(999999);
+
+            expect(result).toStrictEqual(['account-not-found', null]);
         });
     });
 });

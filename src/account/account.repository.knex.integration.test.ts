@@ -194,9 +194,9 @@ describe('KnexAccountRepository', () => {
             expect.any(AccountUpdatedEvent),
         );
 
-        // Verify that the event contains the account
+        // Verify that the event contains the account ID
         const event = emitSpy.mock.calls[0][1] as AccountUpdatedEvent;
-        expect(event.getAccount()).toBe(updated);
+        expect(event.getAccountId()).toBe(updated.id);
 
         // Verify the database was updated
         const updatedAccount = await client('accounts')
@@ -749,5 +749,33 @@ describe('KnexAccountRepository', () => {
 
         emitSpy.mockRestore();
         fromDraftSpy.mockRestore();
+    });
+
+    it('Can create an account entity from a database row', async () => {
+        const [account] = await fixtureManager.createInternalAccount();
+
+        const row = await client('accounts').where('id', account.id).first();
+
+        assert(row);
+
+        const accountFromRow = await accountRepository.createFromRow(row);
+
+        expect(accountFromRow.id).toBe(account.id);
+        expect(accountFromRow.uuid).toBe(account.uuid);
+        expect(accountFromRow.username).toBe(account.username);
+        expect(accountFromRow.name).toBe(account.name);
+        expect(accountFromRow.bio).toBe(account.bio);
+        expect(accountFromRow.url.href).toBe(account.url.href);
+        expect(accountFromRow.avatarUrl?.href).toBe(account.avatarUrl?.href);
+        expect(accountFromRow.bannerImageUrl?.href).toBe(
+            account.bannerImageUrl?.href,
+        );
+        expect(accountFromRow.apId.href).toBe(account.apId.href);
+        expect(accountFromRow.apFollowers?.href).toBe(
+            account.apFollowers?.href,
+        );
+        expect(accountFromRow.apInbox?.href).toBe(account.apInbox?.href);
+        expect(accountFromRow.customFields).toEqual(account.customFields);
+        expect(accountFromRow.isInternal).toBe(account.isInternal);
     });
 });

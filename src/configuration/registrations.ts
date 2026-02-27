@@ -1,4 +1,5 @@
 import { createFederation, type KvStore } from '@fedify/fedify';
+import { RedisKvStore } from '@fedify/redis';
 import type { PubSub } from '@google-cloud/pubsub';
 import { getLogger, type Logger } from '@logtape/logtape';
 import {
@@ -40,7 +41,6 @@ import {
 import { EventSerializer } from '@/events/event';
 import { PubSubEvents } from '@/events/pubsub';
 import { createIncomingPubSubMessageHandler } from '@/events/pubsub-http';
-import { GhostExploreService } from '@/explore/ghost-explore.service';
 import { FeedService } from '@/feed/feed.service';
 import { FeedUpdateService } from '@/feed/feed-update.service';
 import { FlagService } from '@/flag/flag.service';
@@ -50,23 +50,32 @@ import { AccountController } from '@/http/api/account.controller';
 import { BlockController } from '@/http/api/block.controller';
 import { BlueskyController } from '@/http/api/bluesky.controller';
 import { ClientConfigController } from '@/http/api/client-config.controller';
+import { ExploreController } from '@/http/api/explore.controller';
 import { FeedController } from '@/http/api/feed.controller';
 import { FollowController } from '@/http/api/follow.controller';
 import { LikeController } from '@/http/api/like.controller';
 import { MediaController } from '@/http/api/media.controller';
 import { NotificationController } from '@/http/api/notification.controller';
 import { PostController } from '@/http/api/post.controller';
+import { RecommendationsController } from '@/http/api/recommendations.controller';
 import { ReplyChainController } from '@/http/api/reply-chain.controller';
 import { SearchController } from '@/http/api/search.controller';
 import { SiteController } from '@/http/api/site.controller';
+import { TopicController } from '@/http/api/topic.controller';
 import { AccountFollowsView } from '@/http/api/views/account.follows.view';
 import { AccountPostsView } from '@/http/api/views/account.posts.view';
+import { AccountSearchView } from '@/http/api/views/account.search.view';
 import { AccountView } from '@/http/api/views/account.view';
 import { BlocksView } from '@/http/api/views/blocks.view';
+import { ExploreView } from '@/http/api/views/explore.view';
+import { RecommendationsView } from '@/http/api/views/recommendations.view';
 import { ReplyChainView } from '@/http/api/views/reply.chain.view';
+import { TopicView } from '@/http/api/views/topic.view';
 import { WebFingerController } from '@/http/api/webfinger.controller';
 import { WebhookController } from '@/http/api/webhook.controller';
+import { HostDataContextLoader } from '@/http/host-data-context-loader';
 import { BlueskyService } from '@/integration/bluesky.service';
+import { BlueskyApiClient } from '@/integration/bluesky-api.client';
 import { KnexKvStore } from '@/knex.kvstore';
 import { ModerationService } from '@/moderation/moderation.service';
 import { GCloudPubSubPushMessageQueue } from '@/mq/gcloud-pubsub-push/mq';
@@ -76,7 +85,6 @@ import { KnexPostRepository } from '@/post/post.repository.knex';
 import { PostService } from '@/post/post.service';
 import { PostInteractionCountsService } from '@/post/post-interaction-counts.service';
 import { getFullTopic, initPubSubClient } from '@/pubsub';
-import { RedisKvStore } from '@/redis.kvstore';
 import { SiteService } from '@/site/site.service';
 import { GCPStorageAdapter } from '@/storage/adapters/gcp-storage-adapter';
 import { LocalStorageAdapter } from '@/storage/adapters/local-storage-adapter';
@@ -275,6 +283,11 @@ export function registerDependencies(
         }).singleton(),
     );
 
+    container.register(
+        'hostDataContextLoader',
+        asClass(HostDataContextLoader).singleton(),
+    );
+
     container.register('imageProcessor', asClass(ImageProcessor).singleton());
 
     container.register(
@@ -331,8 +344,8 @@ export function registerDependencies(
         asClass(NotificationEventService).singleton(),
     );
     container.register(
-        'ghostExploreService',
-        asClass(GhostExploreService).singleton(),
+        'blueskyApiClient',
+        asClass(BlueskyApiClient).singleton(),
     );
     container.register('blueskyService', asClass(BlueskyService).singleton());
 
@@ -344,6 +357,10 @@ export function registerDependencies(
     container.register(
         'accountPostsView',
         asClass(AccountPostsView).singleton(),
+    );
+    container.register(
+        'accountSearchView',
+        asClass(AccountSearchView).singleton(),
     );
     container.register('blocksView', asClass(BlocksView).singleton());
     container.register('replyChainView', asClass(ReplyChainView).singleton());
@@ -488,4 +505,22 @@ export function registerDependencies(
         'blueskyController',
         asClass(BlueskyController).singleton(),
     );
+
+    container.register('exploreView', asClass(ExploreView).singleton());
+    container.register(
+        'exploreController',
+        asClass(ExploreController).singleton(),
+    );
+
+    container.register(
+        'recommendationsView',
+        asClass(RecommendationsView).singleton(),
+    );
+    container.register(
+        'recommendationsController',
+        asClass(RecommendationsController).singleton(),
+    );
+
+    container.register('topicView', asClass(TopicView).singleton());
+    container.register('topicController', asClass(TopicController).singleton());
 }

@@ -26,10 +26,13 @@ export class FixtureManager {
 
     async createSite(host = faker.internet.domainName()): Promise<Site> {
         const webhook_secret = crypto.randomBytes(32).toString('hex');
+        const ghost_uuid = crypto.randomUUID();
+
         const [id] = await this.db
             .insert({
                 host,
                 webhook_secret,
+                ghost_uuid,
             })
             .into('sites');
 
@@ -37,6 +40,7 @@ export class FixtureManager {
             id,
             host,
             webhook_secret,
+            ghost_uuid,
         };
     }
 
@@ -216,10 +220,22 @@ export class FixtureManager {
         });
     }
 
-    async enableBlueskyIntegration(account: Account) {
+    async enableBlueskyIntegration(
+        account: Account,
+        confirmed: boolean = true,
+        handle?: string | null,
+    ) {
+        const resolvedHandle =
+            handle !== undefined
+                ? handle
+                : confirmed
+                  ? `@${account.username}@bluesky`
+                  : null;
+
         await this.db('bluesky_integration_account_handles').insert({
             account_id: account.id,
-            handle: `@${account.username}@bluesky`,
+            handle: resolvedHandle,
+            confirmed,
         });
     }
 
@@ -229,6 +245,27 @@ export class FixtureManager {
                 account_id: account.id,
             })
             .delete();
+    }
+
+    async createTopic(name: string, slug: string, displayOrder: number = 0) {
+        const [id] = await this.db('topics').insert({
+            name,
+            slug,
+            display_order: displayOrder,
+        });
+        return { id, name, slug, displayOrder };
+    }
+
+    async addAccountToTopic(
+        accountId: number,
+        topicId: number,
+        rank: number = 0,
+    ) {
+        await this.db('account_topics').insert({
+            account_id: accountId,
+            topic_id: topicId,
+            rank_in_topic: rank,
+        });
     }
 
     async reset() {
@@ -247,6 +284,8 @@ export class FixtureManager {
             this.db('outboxes').truncate(),
             this.db('mentions').truncate(),
             this.db('bluesky_integration_account_handles').truncate(),
+            this.db('account_topics').truncate(),
+            this.db('topics').truncate(),
         ]);
         await this.db.raw('SET FOREIGN_KEY_CHECKS = 1');
     }
@@ -268,10 +307,11 @@ export function createFixtureManager(
     const siteService = new SiteService(db, accountService, {
         getSiteSettings: async (host) => ({
             site: {
-                description: 'Balbus clibanus bestia suppellex acies armarium.',
-                title: 'Umerus casso venia bestia stultus colligo sonitus cohors.',
+                description: faker.lorem.sentence(),
+                title: faker.person.fullName(),
                 icon: `https://${host}/avatar/c4863565-3533-43fa-9991-19c5160a4da2.jpg`,
                 cover_image: `https://${host}/cover/cd93c035-7326-4043-aed1-9150fe91b59.jpg`,
+                site_uuid: crypto.randomUUID(),
             },
         }),
     });
